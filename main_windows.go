@@ -6,14 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -24,18 +21,11 @@ import (
 )
 
 const (
-	spotifySetupURL    = "https://download.scdn.co/SpotifyFullSetupX64.exe"
-	spotifyVersionsURL = "https://spotify.uptodown.com/windows/versions"
-	spotifyDownloadURL = "https://dw.uptodown.net/dwn/"
-	releaseChromeURL   = "https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/chrome_elf.dll"
-	releaseBlockURL    = "https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/blockthespot.dll"
-	configURL          = "https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/config.ini"
+	releaseChromeURL = "https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/chrome_elf.dll"
+	releaseBlockURL  = "https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/blockthespot.dll"
 
 	installerLatestReleaseAPI = "https://api.github.com/repos/Nuzair46/BlockTheSpot-Installer/releases/latest"
 	installerReleasesURL      = "https://github.com/Nuzair46/BlockTheSpot-Installer/releases/latest"
-
-	// Temporary test override. Set this to "" to use the version marker from config.ini.
-	spotifyRecommendedVersionOverride = ""
 )
 
 var installerVersion = "dev"
@@ -67,42 +57,13 @@ type githubRelease struct {
 	HTMLURL string `json:"html_url"`
 }
 
-type uptodownVersionsResponse struct {
-	Success int                    `json:"success"`
-	Data    []uptodownVersionEntry `json:"data"`
-}
-
-type uptodownVersionEntry struct {
-	FileID     int64              `json:"fileID"`
-	Version    string             `json:"version"`
-	LastUpdate string             `json:"lastUpdate"`
-	KindFile   string             `json:"kindFile"`
-	VersionURL uptodownVersionURL `json:"versionURL"`
-}
-
-type uptodownVersionURL struct {
-	URL       string `json:"url"`
-	ExtraURL  string `json:"extraURL"`
-	VersionID int64  `json:"versionID"`
-}
-
-type spotifyInstallChoice struct {
-	Display         string
-	BaseVersion     string
-	FullVersion     string
-	URL             string
-	DownloadPageURL string
-	Date            string
-	Size            int64
-	Recommended     bool
-}
-
 type installerApp struct {
 	mw              *walk.MainWindow
 	logoView        *walk.ImageView
 	updateInfo      *walk.LinkLabel
 	updateCheck     *walk.CheckBox
 	versionCombo    *walk.ComboBox
+	refreshButton   *walk.PushButton
 	launchCheck     *walk.CheckBox
 	progress        *walk.ProgressBar
 	status          *walk.Label
@@ -110,6 +71,8 @@ type installerApp struct {
 	installButton   *walk.PushButton
 	uninstallButton *walk.PushButton
 	spotifyVersions []spotifyInstallChoice
+	busy            bool
+	loadingVersions bool
 }
 
 func main() {
@@ -168,10 +131,17 @@ func (a *installerApp) run() error {
 				Layout: VBox{},
 				Children: []Widget{
 					TextLabel{Text: "Spotify version to install"},
-					ComboBox{
-						AssignTo: &a.versionCombo,
-						Editable: false,
-						Model:    []string{"Loading available Windows x64 versions..."},
+					Composite{
+						Layout: HBox{},
+						Children: []Widget{
+							ComboBox{
+								AssignTo:      &a.versionCombo,
+								Editable:      false,
+								Model:         []string{"Loading available Windows x64 versions..."},
+								StretchFactor: 1,
+							},
+							PushButton{AssignTo: &a.refreshButton, Text: "Refresh versions", OnClicked: a.refreshSpotifyVersions},
+						},
 					},
 				},
 			},
@@ -219,7 +189,7 @@ func (a *installerApp) run() error {
 	}
 	a.setUpdateInfo(fmt.Sprintf("Installer version: %s", installerVersion))
 	go a.checkForInstallerUpdate()
-	go a.loadSpotifyVersionChoices()
+	a.refreshSpotifyVersions()
 
 	a.mw.Run()
 	return nil
@@ -260,6 +230,9 @@ func (a *installerApp) startUninstall() {
 }
 
 func (a *installerApp) startOperation(mode operationMode) {
+	if a.busy || (mode == operationInstall && a.loadingVersions) {
+		return
+	}
 	opts := installOptions{
 		UpdateSpotify:       a.updateCheck.Checked(),
 		LaunchSpotifyOnDone: a.launchCheck.Checked(),
@@ -308,12 +281,14 @@ func (a *installerApp) startOperation(mode operationMode) {
 }
 
 func (a *installerApp) setBusy(busy bool) {
-	a.installButton.SetEnabled(!busy)
+	a.busy = busy
+	a.installButton.SetEnabled(!busy && !a.loadingVersions)
 	a.uninstallButton.SetEnabled(!busy)
 	a.updateCheck.SetEnabled(!busy)
 	if a.versionCombo != nil {
-		a.versionCombo.SetEnabled(!busy && len(a.spotifyVersions) > 0)
+		a.versionCombo.SetEnabled(!busy && !a.loadingVersions && len(a.spotifyVersions) > 0)
 	}
+	a.refreshButton.SetEnabled(!busy && !a.loadingVersions)
 	a.launchCheck.SetEnabled(!busy)
 }
 
@@ -360,23 +335,26 @@ func (a *installerApp) setUpdateInfo(text string) {
 	})
 }
 
-func (a *installerApp) loadSpotifyVersionChoices() {
-	_, choices, selectedIndex, err := fetchSpotifyInstallChoices()
+func (a *installerApp) refreshSpotifyVersions() {
+	if a.busy || a.loadingVersions {
+		return
+	}
+	previous := a.selectedSpotifyVersion()
+	a.loadingVersions = true
+	a.setBusy(false)
+	go a.loadSpotifyVersionChoices(previous)
+}
+
+func (a *installerApp) loadSpotifyVersionChoices(previous spotifyInstallChoice) {
+	minimum, choices, selectedIndex, err := fetchSpotifyInstallChoices()
 	if err != nil {
 		a.logfSafe("Warning: failed to load Spotify version list: %v", err)
 	}
+	if minimum != "" {
+		a.logfSafe("Minimum supported Spotify version: %s. Loaded %d pinned releases from LoaderSpot.", minimum, len(choices)-1)
+	}
 
 	a.mw.Synchronize(func() {
-		if err != nil {
-			a.spotifyVersions = nil
-			if a.versionCombo != nil {
-				_ = a.versionCombo.SetModel([]string{"Latest official Spotify x64"})
-				_ = a.versionCombo.SetCurrentIndex(0)
-				a.versionCombo.SetEnabled(false)
-			}
-			return
-		}
-
 		a.spotifyVersions = choices
 		model := make([]string, 0, len(choices))
 		for _, choice := range choices {
@@ -384,13 +362,20 @@ func (a *installerApp) loadSpotifyVersionChoices() {
 		}
 
 		if a.versionCombo != nil {
+			for index, choice := range choices {
+				if previous.URL != "" && choice.URL == previous.URL {
+					selectedIndex = index
+					break
+				}
+			}
 			_ = a.versionCombo.SetModel(model)
 			if selectedIndex < 0 || selectedIndex >= len(model) {
 				selectedIndex = 0
 			}
 			_ = a.versionCombo.SetCurrentIndex(selectedIndex)
-			a.versionCombo.SetEnabled(true)
 		}
+		a.loadingVersions = false
+		a.setBusy(a.busy)
 	})
 }
 
@@ -534,6 +519,15 @@ func (i *installer) runInstall() error {
 		i.setProgress(45)
 	}
 
+	installedVersion, err := getSpotifyVersion(spotifyExe)
+	if err != nil {
+		return fmt.Errorf("failed to verify Spotify before patching: %w", err)
+	}
+	if err := validateInstalledSpotifyVersion(installedVersion, i.minimumVersion, selectedVersion); err != nil {
+		return err
+	}
+	i.logf("Verified installed Spotify version: %s.", installedVersion)
+
 	i.setStatus("Applying BlockTheSpot files")
 	if err := i.patchSpotify(spotifyDir); err != nil {
 		return err
@@ -640,24 +634,8 @@ func (i *installer) installSpotify(spotifyExe string, selectedVersion spotifyIns
 	defer os.RemoveAll(tempDir)
 
 	setupPath := filepath.Join(tempDir, "SpotifyFullSetupX64.exe")
-	downloadURL := spotifySetupURL
-	versionLabel := "latest official Spotify x64"
-	if selectedVersion.URL != "" {
-		downloadURL = selectedVersion.URL
-		versionLabel = selectedVersion.FullVersion
-	} else if selectedVersion.DownloadPageURL != "" {
-		i.logf("Resolving Uptodown download link for %s.", selectedVersion.FullVersion)
-		resolvedURL, err := resolveUptodownDownloadURL(selectedVersion.DownloadPageURL, selectedVersion.FullVersion)
-		if err != nil {
-			return fmt.Errorf("failed to resolve Spotify installer download link: %w", err)
-		}
-		downloadURL = resolvedURL
-		versionLabel = selectedVersion.FullVersion
-	}
-
-	i.logf("Downloading Spotify installer for %s.", versionLabel)
-	if err := downloadFileWithProgress(downloadURL, setupPath, i.logf); err != nil {
-		return fmt.Errorf("failed to download Spotify installer: %w", err)
+	if err := downloadSpotifyInstaller(selectedVersion, setupPath, i.logf); err != nil {
+		return err
 	}
 
 	i.setProgress(35)
@@ -780,7 +758,7 @@ func (i *installer) loadConfig() error {
 		return fmt.Errorf("failed to parse minimum Spotify version from config.ini: %w", err)
 	}
 
-	i.minimumVersion = effectiveSpotifyRecommendedVersion(version)
+	i.minimumVersion = version
 	i.downloadedConfig = body
 	return nil
 }
@@ -883,603 +861,6 @@ func parseInstallerVersion(value string) ([]int, error) {
 	return parsed, nil
 }
 
-func fetchSpotifyInstallChoices() (string, []spotifyInstallChoice, int, error) {
-	configBody, err := downloadBytes(configURL)
-	if err != nil {
-		return "", nil, -1, fmt.Errorf("failed to download config.ini: %w", err)
-	}
-
-	recommendedVersion, err := extractMinimumVersionFromConfig(configBody)
-	if err != nil {
-		return "", nil, -1, fmt.Errorf("failed to parse recommended Spotify version: %w", err)
-	}
-	recommendedVersion = effectiveSpotifyRecommendedVersion(recommendedVersion)
-
-	response, err := fetchUptodownVersions(recommendedVersion)
-	if err != nil {
-		return recommendedVersion, nil, -1, fmt.Errorf("failed to download Spotify versions list: %w", err)
-	}
-
-	choices, recommendedIndex, err := buildSpotifyInstallChoices(recommendedVersion, response)
-	if err != nil {
-		return recommendedVersion, nil, -1, err
-	}
-
-	return recommendedVersion, choices, recommendedIndex, nil
-}
-
-func fetchUptodownVersions(recommendedVersion string) (uptodownVersionsResponse, error) {
-	body, err := downloadBytes(spotifyVersionsURL)
-	if err != nil {
-		return uptodownVersionsResponse{Success: 1}, err
-	}
-
-	response := parseUptodownVersionsPage(body)
-	if len(response.Data) == 0 {
-		return response, errors.New("no Windows x64 Spotify installers found in versions list")
-	}
-
-	return response, nil
-}
-
-func uptodownVersionDedupeKey(entry uptodownVersionEntry) string {
-	versionID := entry.VersionURL.VersionID
-	if versionID == 0 {
-		versionID = entry.FileID
-	}
-	if versionID != 0 {
-		return strconv.FormatInt(versionID, 10)
-	}
-	return strings.TrimSpace(entry.Version)
-}
-
-func parseUptodownVersionsPage(body []byte) uptodownVersionsResponse {
-	response := uptodownVersionsResponse{Success: 1}
-	source := string(body)
-	lowerSource := strings.ToLower(source)
-	seen := make(map[string]bool)
-
-	for offset := 0; offset < len(source); {
-		divStartOffset := strings.Index(lowerSource[offset:], "<div")
-		if divStartOffset < 0 {
-			break
-		}
-
-		divStart := offset + divStartOffset
-		tagEndOffset := strings.Index(source[divStart:], ">")
-		if tagEndOffset < 0 {
-			break
-		}
-
-		tag := source[divStart : divStart+tagEndOffset+1]
-		versionIDValue := extractHTMLAttribute(tag, "data-version-id")
-		versionID, err := strconv.ParseInt(strings.TrimSpace(versionIDValue), 10, 64)
-		if err != nil || versionID == 0 {
-			offset = divStart + len("<div")
-			continue
-		}
-
-		closeOffset := strings.Index(lowerSource[divStart+tagEndOffset+1:], "</div>")
-		if closeOffset < 0 {
-			break
-		}
-		contentStart := divStart + tagEndOffset + 1
-		contentEnd := contentStart + closeOffset
-		content := source[contentStart:contentEnd]
-
-		entry := uptodownVersionEntry{
-			FileID: versionID,
-			VersionURL: uptodownVersionURL{
-				URL:       html.UnescapeString(strings.TrimSpace(extractHTMLAttribute(tag, "data-url"))),
-				ExtraURL:  html.UnescapeString(strings.TrimSpace(extractHTMLAttribute(tag, "data-extra-url"))),
-				VersionID: versionID,
-			},
-			KindFile:   html.UnescapeString(strings.TrimSpace(extractSpanText(content, "type"))),
-			Version:    html.UnescapeString(strings.TrimSpace(extractSpanText(content, "version"))),
-			LastUpdate: html.UnescapeString(strings.TrimSpace(extractSpanText(content, "date"))),
-		}
-		if entry.KindFile == "" {
-			entry.KindFile = html.UnescapeString(strings.TrimSpace(extractHTMLAttribute(content, "title")))
-		}
-
-		dedupeKey := uptodownVersionDedupeKey(entry)
-		if dedupeKey != "" && !seen[dedupeKey] {
-			seen[dedupeKey] = true
-			response.Data = append(response.Data, entry)
-		}
-
-		offset = contentEnd + len("</div>")
-	}
-
-	return response
-}
-
-func extractSpanText(fragment, className string) string {
-	lowerFragment := strings.ToLower(fragment)
-	searchClass := strings.ToLower(className)
-	offset := 0
-
-	for {
-		spanStartOffset := strings.Index(lowerFragment[offset:], "<span")
-		if spanStartOffset < 0 {
-			return ""
-		}
-
-		spanStart := offset + spanStartOffset
-		tagEndOffset := strings.Index(fragment[spanStart:], ">")
-		if tagEndOffset < 0 {
-			return ""
-		}
-
-		tag := fragment[spanStart : spanStart+tagEndOffset+1]
-		if htmlClassContains(extractHTMLAttribute(tag, "class"), searchClass) {
-			contentStart := spanStart + tagEndOffset + 1
-			spanEndOffset := strings.Index(lowerFragment[contentStart:], "</span>")
-			if spanEndOffset < 0 {
-				return ""
-			}
-			return stripHTMLTags(fragment[contentStart : contentStart+spanEndOffset])
-		}
-
-		offset = spanStart + len("<span")
-	}
-}
-
-func htmlClassContains(value, className string) bool {
-	for _, field := range strings.Fields(value) {
-		if strings.EqualFold(field, className) {
-			return true
-		}
-	}
-	return false
-}
-
-func stripHTMLTags(value string) string {
-	var b strings.Builder
-	inTag := false
-	for _, r := range value {
-		switch r {
-		case '<':
-			inTag = true
-		case '>':
-			inTag = false
-		default:
-			if !inTag {
-				b.WriteRune(r)
-			}
-		}
-	}
-	return b.String()
-}
-
-func buildSpotifyInstallChoices(recommendedVersion string, response uptodownVersionsResponse) ([]spotifyInstallChoice, int, error) {
-	if response.Success != 1 {
-		return nil, -1, errors.New("Spotify versions list returned an unsuccessful response")
-	}
-	if len(response.Data) == 0 {
-		return nil, -1, errors.New("no Windows x64 Spotify installers found in versions list")
-	}
-
-	sort.Slice(response.Data, func(i, j int) bool {
-		return compareVersion(response.Data[i].Version, response.Data[j].Version) > 0
-	})
-
-	recommendedBaseVersion := baseSpotifyVersion(recommendedVersion)
-	choices := make([]spotifyInstallChoice, 0, len(response.Data))
-	recommendedIndex := -1
-	closestSupportedIndex := -1
-
-	for _, entry := range response.Data {
-		if !strings.EqualFold(strings.TrimSpace(entry.KindFile), "exe") {
-			continue
-		}
-
-		fullVersion := strings.TrimSpace(entry.Version)
-		if fullVersion == "" {
-			continue
-		}
-
-		baseVersion := baseSpotifyVersion(fullVersion)
-		if baseVersion == "" {
-			continue
-		}
-		if recommendedBaseVersion != "" && compareVersion(baseVersion, recommendedBaseVersion) < 0 {
-			continue
-		}
-
-		downloadPageURL := uptodownDownloadPageURL(entry)
-		if downloadPageURL == "" {
-			continue
-		}
-
-		choice := spotifyInstallChoice{
-			BaseVersion:     baseVersion,
-			FullVersion:     fullVersion,
-			DownloadPageURL: downloadPageURL,
-			Date:            strings.TrimSpace(entry.LastUpdate),
-			Recommended:     fullVersion == recommendedVersion || baseVersion == recommendedBaseVersion,
-		}
-		choice.Display = choice.FullVersion
-		if choice.Recommended {
-			choice.Display += " (recommended)"
-			recommendedIndex = len(choices)
-		}
-
-		choices = append(choices, choice)
-		if recommendedBaseVersion == "" || compareVersion(baseVersion, recommendedBaseVersion) >= 0 {
-			closestSupportedIndex = len(choices) - 1
-		}
-	}
-
-	if len(choices) == 0 {
-		return nil, -1, errors.New("no valid Windows x64 Spotify installers found in versions list")
-	}
-	if recommendedIndex < 0 {
-		recommendedIndex = closestSupportedIndex
-		if recommendedIndex < 0 {
-			recommendedIndex = 0
-		}
-		choices[recommendedIndex].Recommended = true
-		choices[recommendedIndex].Display += " (recommended)"
-	}
-
-	return choices, recommendedIndex, nil
-}
-
-func uptodownDownloadPageURL(entry uptodownVersionEntry) string {
-	versionID := entry.VersionURL.VersionID
-	if versionID == 0 {
-		versionID = entry.FileID
-	}
-	if versionID == 0 {
-		return ""
-	}
-
-	baseURL := strings.TrimSpace(entry.VersionURL.URL)
-	if baseURL == "" {
-		baseURL = "https://spotify.en.uptodown.com/windows"
-	}
-
-	extraURL := strings.Trim(strings.TrimSpace(entry.VersionURL.ExtraURL), "/")
-	if extraURL == "" {
-		extraURL = "download"
-	}
-
-	return fmt.Sprintf("%s/%s/%d", strings.TrimRight(baseURL, "/"), extraURL, versionID)
-}
-
-func resolveUptodownDownloadURL(pageURL, version string) (string, error) {
-	pageBody, err := downloadBytes(pageURL)
-	if err != nil {
-		return "", err
-	}
-
-	token, err := extractUptodownDownloadToken(pageBody)
-	if err != nil {
-		return "", err
-	}
-
-	filename := uptodownInstallerFilename(version)
-	if filename == "" {
-		return "", errors.New("empty Spotify installer filename")
-	}
-
-	return buildUptodownDownloadURL(token, filename), nil
-}
-
-func extractUptodownDownloadToken(body []byte) (string, error) {
-	source := string(body)
-	lowerSource := strings.ToLower(source)
-
-	for offset := 0; offset < len(source); {
-		tagStartOffset := strings.Index(lowerSource[offset:], "<button")
-		if tagStartOffset < 0 {
-			break
-		}
-
-		tagStart := offset + tagStartOffset
-		tagEndOffset := strings.Index(source[tagStart:], ">")
-		if tagEndOffset < 0 {
-			break
-		}
-
-		tag := source[tagStart : tagStart+tagEndOffset+1]
-		if strings.EqualFold(extractHTMLAttribute(tag, "id"), "detail-download-button") {
-			token := strings.TrimSpace(html.UnescapeString(extractHTMLAttribute(tag, "data-url")))
-			if token != "" {
-				return token, nil
-			}
-			break
-		}
-
-		offset = tagStart + len("<button")
-	}
-
-	token := strings.TrimSpace(html.UnescapeString(extractHTMLAttribute(source, "data-url")))
-	if token == "" {
-		return "", errors.New("download button data-url not found")
-	}
-	return token, nil
-}
-
-func extractHTMLAttribute(fragment, name string) string {
-	offset := 0
-	for {
-		idx := strings.Index(fragment[offset:], name)
-		if idx < 0 {
-			return ""
-		}
-		idx += offset
-
-		if idx > 0 && isHTMLAttributeNameChar(fragment[idx-1]) {
-			offset = idx + len(name)
-			continue
-		}
-
-		pos := idx + len(name)
-		if pos < len(fragment) && isHTMLAttributeNameChar(fragment[pos]) {
-			offset = pos
-			continue
-		}
-
-		for pos < len(fragment) && isHTMLSpace(fragment[pos]) {
-			pos++
-		}
-		if pos >= len(fragment) || fragment[pos] != '=' {
-			offset = pos
-			continue
-		}
-		pos++
-		for pos < len(fragment) && isHTMLSpace(fragment[pos]) {
-			pos++
-		}
-		if pos >= len(fragment) || (fragment[pos] != '"' && fragment[pos] != '\'') {
-			return ""
-		}
-
-		quote := fragment[pos]
-		pos++
-		end := strings.IndexByte(fragment[pos:], quote)
-		if end < 0 {
-			return ""
-		}
-		return fragment[pos : pos+end]
-	}
-}
-
-func isHTMLAttributeNameChar(b byte) bool {
-	return (b >= 'a' && b <= 'z') ||
-		(b >= 'A' && b <= 'Z') ||
-		(b >= '0' && b <= '9') ||
-		b == '-' ||
-		b == '_' ||
-		b == ':'
-}
-
-func isHTMLSpace(b byte) bool {
-	return b == ' ' || b == '\n' || b == '\r' || b == '\t' || b == '\f'
-}
-
-func uptodownInstallerFilename(version string) string {
-	version = strings.TrimSpace(version)
-	if version == "" {
-		return ""
-	}
-	return strings.ReplaceAll(version, ".", "-") + ".exe"
-}
-
-func buildUptodownDownloadURL(token, filename string) string {
-	token = strings.TrimLeft(strings.TrimSpace(token), "/")
-	if token != "" && !strings.HasSuffix(token, "/") {
-		token += "/"
-	}
-	return spotifyDownloadURL + token + filename
-}
-
-func downloadFile(url, targetPath string) error {
-	body, err := downloadBytes(url)
-	if err != nil {
-		return err
-	}
-	return writeFileAtomically(targetPath, body)
-}
-
-func downloadFileWithProgress(url, targetPath string, logf func(format string, args ...any)) error {
-	req, err := newDownloadRequest(url)
-	if err != nil {
-		return err
-	}
-
-	client := &http.Client{Timeout: 10 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("unexpected HTTP status %s", resp.Status)
-	}
-
-	tmpPath := targetPath + ".download"
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
-	}
-
-	file, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	buf := make([]byte, 256*1024)
-	var written int64
-	nextLogAt := int64(5 * 1024 * 1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := file.Write(buf[:n]); writeErr != nil {
-				_ = file.Close()
-				_ = os.Remove(tmpPath)
-				return writeErr
-			}
-			written += int64(n)
-			if logf != nil && written >= nextLogAt {
-				if resp.ContentLength > 0 {
-					logf("Downloaded Spotify installer: %.1f MB / %.1f MB.", bytesToMiB(written), bytesToMiB(resp.ContentLength))
-				} else {
-					logf("Downloaded Spotify installer: %.1f MB.", bytesToMiB(written))
-				}
-				nextLogAt = written + int64(5*1024*1024)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			_ = file.Close()
-			_ = os.Remove(tmpPath)
-			return readErr
-		}
-	}
-
-	if err := file.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	if logf != nil {
-		logf("Spotify installer download complete: %.1f MB.", bytesToMiB(written))
-	}
-
-	_ = os.Remove(targetPath)
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	return nil
-}
-
-func bytesToMiB(value int64) float64 {
-	return float64(value) / 1024 / 1024
-}
-
-func downloadBytes(url string) ([]byte, error) {
-	req, err := newDownloadRequest(url)
-	if err != nil {
-		return nil, err
-	}
-
-	client := &http.Client{Timeout: 3 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("unexpected HTTP status %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-func newDownloadRequest(url string) (*http.Request, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-	return req, nil
-}
-
-func writeFileAtomically(targetPath string, body []byte) error {
-	tmpPath := targetPath + ".download"
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
-	}
-
-	file, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	_, copyErr := file.Write(body)
-	closeErr := file.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return closeErr
-	}
-
-	_ = os.Remove(targetPath)
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	return nil
-}
-
-func extractMinimumVersionFromConfig(body []byte) (string, error) {
-	lines := strings.Split(string(body), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, ";") {
-			continue
-		}
-
-		candidate := strings.TrimSpace(strings.TrimPrefix(line, ";"))
-		if candidate == "" || !looksLikeSpotifyVersion(candidate) {
-			continue
-		}
-		return candidate, nil
-	}
-
-	return "", errors.New("no Spotify version marker found")
-}
-
-func effectiveSpotifyRecommendedVersion(configVersion string) string {
-	override := strings.TrimSpace(spotifyRecommendedVersionOverride)
-	if override != "" {
-		return override
-	}
-	return configVersion
-}
-
-func looksLikeSpotifyVersion(value string) bool {
-	if !strings.HasPrefix(value, "1.") {
-		return false
-	}
-
-	parts := strings.Split(value, ".")
-	if len(parts) < 3 {
-		return false
-	}
-
-	numericParts := 0
-	for _, part := range parts {
-		if leadingDigits(part) == "" {
-			break
-		}
-		numericParts++
-		if numericParts == 4 {
-			break
-		}
-	}
-
-	return numericParts >= 3
-}
-
 func stopSpotifyProcesses() {
 	processes := []string{"Spotify.exe", "SpotifyWebHelper.exe", "SpotifyFullSetup.exe", "SpotifyFullSetupX64.exe"}
 	for _, name := range processes {
@@ -1541,113 +922,6 @@ func getSpotifyVersion(spotifyExe string) (string, error) {
 		return "", errors.New("empty Spotify version")
 	}
 	return v, nil
-}
-
-func compareVersion(a, b string) int {
-	av := normalizeVersion(a)
-	bv := normalizeVersion(b)
-	for idx := 0; idx < len(av) && idx < len(bv); idx++ {
-		if av[idx] < bv[idx] {
-			return -1
-		}
-		if av[idx] > bv[idx] {
-			return 1
-		}
-	}
-	return 0
-}
-
-func normalizeVersion(value string) []int {
-	parts := strings.Split(value, ".")
-	parsed := make([]int, 0, 4)
-	for _, part := range parts {
-		digits := leadingDigits(part)
-		if digits == "" {
-			break
-		}
-		n, err := strconv.Atoi(digits)
-		if err != nil {
-			break
-		}
-		parsed = append(parsed, n)
-		if len(parsed) == 4 {
-			break
-		}
-	}
-	for len(parsed) < 4 {
-		parsed = append(parsed, 0)
-	}
-	return parsed
-}
-
-func leadingDigits(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			break
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-func normalizeVersionString(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-
-	// Most systems return a dotted version directly.
-	for _, token := range strings.Fields(raw) {
-		if strings.Count(token, ".") >= 2 && leadingDigits(token) != "" {
-			return token
-		}
-	}
-
-	// Some PowerShell setups format ProductVersionRaw as a table (Major Minor Build Revision).
-	numbers := make([]string, 0, 4)
-	for _, token := range strings.Fields(raw) {
-		if !isAllDigits(token) {
-			continue
-		}
-		numbers = append(numbers, token)
-		if len(numbers) == 4 {
-			break
-		}
-	}
-	if len(numbers) >= 3 {
-		return strings.Join(numbers, ".")
-	}
-
-	return raw
-}
-
-func baseSpotifyVersion(value string) string {
-	parts := strings.Split(value, ".")
-	base := make([]string, 0, 4)
-	for _, part := range parts {
-		digits := leadingDigits(part)
-		if digits == "" {
-			break
-		}
-		base = append(base, digits)
-		if len(base) == 4 {
-			break
-		}
-	}
-	return strings.Join(base, ".")
-}
-
-func isAllDigits(value string) bool {
-	if value == "" {
-		return false
-	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func waitForFile(path string, timeout time.Duration) error {
