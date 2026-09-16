@@ -67,6 +67,43 @@ public sealed class CatalogTests
         Assert.Throws<InvalidOperationException>(() => SpotifyVersions.ValidateInstalled("1.3.1.223", "1.2.93.667", new("1.2.93.667", Sources.LatestSpotify)));
         SpotifyVersions.ValidateInstalled("1.3.1.223", "1.2.93.667", null);
     }
+
+    [Fact]
+    public async Task PagesFeedLoadsWithoutDependingOnOtherServers()
+    {
+        var handler = new FakeHandler(uri => uri == Sources.CatalogApi
+            ? Response.Text(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json")))
+            : throw new InvalidOperationException("Unexpected upstream request"));
+        using var client = new HttpClient(handler);
+        var result = await new CatalogService(new Downloads(client)).LoadAsync(CancellationToken.None);
+        Assert.Null(result.Warning);
+        Assert.Equal(Compatibility.TestedVersion, result.Selected.FullVersion);
+        Assert.Equal([Sources.CatalogApi], handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("not json")]
+    [InlineData("{\"1.2.93.667\":{\"fullversion\":\"1.99999999999999.3.4.gabcdefab\"}}")]
+    public async Task BrokenPagesFeedFallsBackToMaintainedUpstream(string bad)
+    {
+        var handler = new FakeHandler(uri => Response.Text(uri == Sources.CatalogApi ? bad :
+            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json"))));
+        using var client = new HttpClient(handler);
+        var result = await new CatalogService(new Downloads(client)).LoadAsync(CancellationToken.None);
+        Assert.Null(result.Warning);
+        Assert.Equal(Compatibility.TestedVersion, result.Selected.FullVersion);
+        Assert.Equal([Sources.CatalogApi, Sources.Catalog], handler.Requests);
+    }
+
+    [Fact]
+    public async Task CallerCancellationDoesNotStartAnUpstreamFallback()
+    {
+        using var token = new CancellationTokenSource();
+        token.Cancel();
+        using var client = new HttpClient(new FakeHandler(_ => throw new OperationCanceledException(token.Token)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new CatalogService(new Downloads(client)).LoadAsync(token.Token));
+    }
 }
 
 public sealed class DownloadTests

@@ -25,7 +25,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private bool busy, loading, canCancel, reinstall = true, launch = true, removeStore, showLog, allowUntested;
     private IReadOnlyList<SpotifyChoice> catalogChoices = [];
     private string status = "Getting ready", detail = "Loading Spotify versions…", installedLabel = "Checking your installation…", installedDetail = "";
-    private string hint = "Loading the live LoadSpot catalog", versionLabel = "v" + AppVersion, lastStage = "";
+    private string hint = "Loading the Spotify version catalog", versionLabel = "v" + AppVersion, lastStage = "";
     private SpotifyChoice? selected;
     private double progressValue;
 
@@ -107,7 +107,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             CatalogHint = result.Warning ?? $"Tested: {Compatibility.TestedVersion} · Newer builds require Advanced options.";
             Status = result.Warning is null ? "Ready when you are" : "Version list needs attention";
             StatusDetail = result.Warning ?? "Choose your options, then install BlockTheSpot.";
-            AddLog(result.Warning ?? $"Loaded {result.Choices.Count - 1} Spotify versions from LoadSpot.");
+            AddLog(result.Warning ?? $"Loaded {result.Choices.Count - 1} Spotify versions from the catalog.");
         }
         finally { loading = false; ChangedState(); }
     }

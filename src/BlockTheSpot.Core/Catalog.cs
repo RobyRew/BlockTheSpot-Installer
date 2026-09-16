@@ -8,6 +8,7 @@ public static class Sources
 {
     public const string Repository = "https://github.com/RobyRew/BlockTheSpot-Installer";
     public static readonly Uri Catalog = new("https://raw.githubusercontent.com/LoaderSpot/table/main/table/versions.json");
+    public static readonly Uri CatalogApi = new("https://robyrew.github.io/BlockTheSpot-Installer/api/v1/windows-x64.json");
     public static readonly Uri Config = new("https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/config.ini");
     public static readonly Uri Chrome = new("https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/chrome_elf.dll");
     public static readonly Uri Block = new("https://github.com/Nuzair46/BlockTheSpot/releases/latest/download/blockthespot.dll");
@@ -35,7 +36,9 @@ public static partial class SpotifyVersions
     public static Version Parse(string text)
     {
         if (!VersionPattern().IsMatch(text)) throw new InvalidDataException($"Unrecognized Spotify version: {text}");
-        return Version.Parse(string.Join('.', text.Split('.').Take(4)));
+        if (!Version.TryParse(string.Join('.', text.Split('.').Take(4)), out var version))
+            throw new InvalidDataException($"Unrecognized Spotify version: {text}");
+        return version;
     }
 
     public static string MinimumFromConfig(string text) =>
@@ -76,7 +79,7 @@ public static partial class SpotifyVersions
             var entry = property.Value;
             var full = Text(entry, "fullversion");
             if (full is null || !VersionPattern().IsMatch(full)) continue;
-            var number = Parse(full);
+            if (!Version.TryParse(string.Join('.', full.Split('.').Take(4)), out var number)) continue;
             if (number.ToString() != property.Name || number < minimumVersion) continue;
             var build = Text(entry, "buildType");
             if (build is not null && !build.Equals("Release", StringComparison.OrdinalIgnoreCase)) continue;
@@ -106,16 +109,24 @@ public sealed class CatalogService(Downloads downloads)
 {
     public async Task<CatalogResult> LoadAsync(CancellationToken token)
     {
-        string? minimum = null;
-        try
+        // Browsing does not depend on the patch server. Installation validates its current config separately.
+        var minimum = SpotifyVersions.Parse(Compatibility.TestedVersion).ToString();
+        string? failure = null;
+        foreach (var (source, seconds) in new[] { (Sources.CatalogApi, 4), (Sources.Catalog, 8) })
         {
-            minimum = SpotifyVersions.MinimumFromConfig(await downloads.TextAsync(Sources.Config, token));
-            return SpotifyVersions.Read(await downloads.TextAsync(Sources.Catalog, token), minimum);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+            deadline.CancelAfter(TimeSpan.FromSeconds(seconds));
+            try
+            {
+                var result = SpotifyVersions.Read(await downloads.TextAsync(source, deadline.Token), minimum);
+                if (result.Choices.Count < 2) throw new InvalidDataException("No usable versions in the catalog.");
+                return result;
+            }
+            catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or OperationCanceledException && !token.IsCancellationRequested)
+            { failure = error.Message; }
         }
-        catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or JsonException or OperationCanceledException && !token.IsCancellationRequested)
-        {
-            return new(minimum, [Compatibility.TestedChoice, SpotifyChoice.Latest], Compatibility.TestedChoice,
-                $"Version list unavailable. The saved link for the tested version is still available. {error.Message}");
-        }
+        token.ThrowIfCancellationRequested();
+        return new(minimum, [Compatibility.TestedChoice, SpotifyChoice.Latest], Compatibility.TestedChoice,
+            $"Version list unavailable. The saved link for the tested version is still available. {failure}");
     }
 }

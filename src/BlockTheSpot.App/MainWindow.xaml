@@ -92,7 +92,7 @@
                             <TextBlock Text="{Binding ProgressLabel}" HorizontalAlignment="Right" Style="{StaticResource SecondaryText}"/>
                         </Grid>
                         <TextBlock Text="{Binding StatusDetail}" Style="{StaticResource SecondaryText}" Margin="0,6,0,12"/>
-                        <ProgressBar Value="{Binding ProgressValue}" IsIndeterminate="{Binding IsLoading}" Height="5" AutomationProperties.Name="Installation progress"/>
+                        <ProgressBar Value="{Binding ProgressValue, Mode=OneWay}" IsIndeterminate="{Binding IsLoading}" Height="5" AutomationProperties.Name="Installation progress"/>
                     </StackPanel>
                 </Border>
         <Grid Grid.Row="3" Margin="0,18,0,0">
