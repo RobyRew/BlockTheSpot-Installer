@@ -1,82 +1,82 @@
-<center>
-	<h1 align="center">BlockTheSpot Installer</h1> 
-   <h4 align="center">Official installer for a multi-purpose adblocker and skip-bypass for the <strong>Spotify for Windows (64 bit)</strong> </h4>
-   <h5 align="center">Please support Spotify by purchasing premium</h5>
-   <p align="center">
-     <a href="https://github.com/Nuzair46/BlockTheSpot-Installer/releases"><img src="https://github.com/Nuzair46/BlockTheSpot-Installer/blob/main/assets/blockthespot.png" /></a>
-   </p>
-</center>
+# BlockTheSpot Installer
 
-[![Build status](https://github.com/Nuzair46/BlockTheSpot-Installer/actions/workflows/ci-release.yml/badge.svg?branch=main)](https://github.com/Nuzair46/BlockTheSpot-Installer/actions/workflows/ci-release.yml)  [![Discord](https://discord.com/api/guilds/807273906872123412/widget.png)](https://discord.gg/eYudMwgYtY) <img src="https://img.shields.io/github/downloads/Nuzair46/blockthespot-installer/total.svg" />
+A native Windows app for installing and restoring [BlockTheSpot](https://github.com/Nuzair46/BlockTheSpot). Built with .NET 10 WPF and Microsoft's Windows 11 Fluent theme.
 
-Official installer for [BlockTheSpot](https://github.com/Nuzair46/BlockTheSpot).
+[Download the installer](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest/download/BlockTheSpotInstaller.exe) · [Download page](https://robyrew.github.io/BlockTheSpot-Installer/) · [Release notes](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest)
 
 ## Install
 
-1. Download latest [BlockTheSpotInstaller.exe](https://github.com/Nuzair46/BlockTheSpot-Installer/releases/latest/download/BlockTheSpotInstaller.exe).
-2. Close Spotify if it is running.
-3. Run `BlockTheSpotInstaller.exe`.
-4. Choose one action:
-   - `Install / Patch` to install or update BlockTheSpot.
-   - `Uninstall / Restore` to remove BlockTheSpot and restore original `chrome_elf.dll` when backup exists.
-5. Choose the Spotify Windows x64 version you want to install. Versions come from the maintained [LoadSpot catalog](https://loadspot.pages.dev/versions), using the [same JSON as its website](https://github.com/LoaderSpot/table/blob/main/table/versions.json). The list shows the minimum version from BlockTheSpot's `config.ini` and newer versions, including their dates and sizes. The exact recommended version is preselected when available; otherwise, the closest newer version is selected and labeled accordingly. Explicitly marked development builds and other architectures are excluded.
-6. Enable `Update or reinstall Spotify before patching` when you want to install the selected Spotify version before patching.
-7. If `Launch Spotify and close installer after completion` is enabled, Spotify starts and the installer closes automatically.
+1. Download `BlockTheSpotInstaller.exe` and open it normally, **without running as administrator**.
+2. The default is **Spotify 1.2.93.667.g7b5cc0ce**, the latest tested compatible version for this release.
+3. Leave **Install selected Spotify version before patching** on to install that version. Turn it off only to keep an already compatible installation.
+4. Select **Install BlockTheSpot**. The app downloads and validates all required files before changing Spotify.
+5. Use **Restore original Spotify** to undo the patch.
 
-### Version and download options
+The EXE bundles the .NET runtime. It targets Windows x64, uses the system light/dark theme, and supports keyboard navigation and Windows scaling. Windows 11 is recommended; supported Windows 10 editions also work. Spotify and the patch must both be x64.
 
-- **Refresh versions** reloads the catalog and the supported minimum without restarting the installer. It preserves your selection when it is still available.
-- **Latest official Spotify x64** downloads Spotify's current full installer directly. Enable the update/reinstall checkbox to replace an already installed version. This option remains available if the catalog cannot be loaded.
-- Pinned versions use the exact download URLs supplied by LoadSpot, including its download service and legacy Spotify CDN links. The installer no longer scrapes Uptodown or constructs its token-based download URLs.
-- If a pinned download returns 403, 404, or 410, refresh the list or explicitly choose the latest official installer. The installer does not silently substitute another version.
-- Empty responses, HTML error pages, truncated transfers, and downloads that do not match the catalog's file size are rejected. Before patching, the installed Spotify version must meet the supported minimum and match any pinned selection.
+Support the artists you listen to. Please consider [Spotify Premium](https://www.spotify.com/premium/).
 
-LoadSpot's live website is maintained in [`LoaderSpot/table`](https://github.com/LoaderSpot/table). The older [`LoaderSpot/LoaderSpot`](https://github.com/LoaderSpot/LoaderSpot) repository contains the original installer discovery work, but its archived `versions.json` is no longer current.
+## Versions and options
+
+- The tested default is pinned in `src/BlockTheSpot.Core/Compatibility.cs`. It does **not** follow the newest catalog entry or change automatically when an upstream script changes. Update this constant and its tests only after verifying a new version with BlockTheSpot.
+- **Advanced → Show newer, untested Spotify versions** exposes newer LoadSpot builds and the latest official Spotify installer. These versions are not presented as compatible by default.
+- The live [LoadSpot catalog](https://loadspot.pages.dev/versions) comes from [`LoaderSpot/table`](https://github.com/LoaderSpot/table/blob/main/table/versions.json). Its predecessor [`LoaderSpot/LoaderSpot`](https://github.com/LoaderSpot/LoaderSpot) is archived. The maintained catalog includes architecture-specific download URLs, dates, and sizes.
+- **Refresh** reloads versions while preserving a valid selection. The known tested link remains available if catalog retrieval fails.
+- **Replace Microsoft Store edition** is opt-in and affects only the current Windows account.
+- Downloads can be cancelled. Once Spotify setup or file replacement begins, the operation finishes before the app can be closed.
+- The activity log can be saved locally. No analytics or telemetry are added by the application.
+
+## Reliability
+
+The app verifies downloaded PE files, expected sizes when supplied, and Spotify's Authenticode publisher before launching setup. It waits for setup to exit and verifies the installed version and architecture. Patch files are staged before use; failed replacements restore a snapshot of the previous files. Reinstalling Spotify refreshes the original DLL backup so it does not keep an older version's backup.
+
+These checks do not turn untested Spotify versions into supported versions. The latest upstream BlockTheSpot configuration is still checked, and an incompatible upstream minimum stops installation rather than silently changing the pinned default.
 
 ## Development
 
-### Tests
+Install the SDK specified by `global.json` (.NET 10 LTS). There are no third-party application framework packages. Tests use xUnit; dependency versions are locked.
 
-The catalog, version checks, and HTTP download tests run on Windows, macOS, and Linux. The normal suite uses local HTTP servers and a small fixture from the live LoadSpot catalog, including the `1.2.93.667.g7b5cc0ce` download regression.
-
-```bash
-go test -race -count=1 ./...
-go vet ./...
+```sh
+dotnet test tests/BlockTheSpot.Tests/BlockTheSpot.Tests.csproj -c Release
+dotnet build src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release
+node --test scripts/test-site.mjs
 ```
 
-To verify the current upstream catalog and BlockTheSpot configuration, opt into the network smoke test:
-
-```bash
-BLOCKTHESPOT_LIVE_TEST=1 go test -run TestLiveLoadSpotCatalog -v -count=1 .
-```
-
-On Windows, generate the app resources below before running tests; `go test -count=1 ./...` does not require the C compiler needed by the race detector. CI runs the portable suite with the race detector on Linux, then tests, vets, and builds the installer on Windows. A Windows install/reinstall smoke test is still needed to verify the Spotify setup process and native GUI.
-
-### Prerequisite (before local build)
-
-Generate the Windows app resources object (required for `walk`):
-
-```bash
-go run github.com/akavel/rsrc@v0.10.2 -manifest assets/app.manifest -ico assets/blockthespot.ico -arch amd64 -o windows_app_resources_amd64.syso
-```
-
-### Build locally (on Windows)
+The core and its tests run on Windows, macOS, and Linux. WPF can be cross-compiled, but running the GUI requires Windows. Publish the standalone EXE on Windows:
 
 ```powershell
-go build -trimpath -ldflags="-H=windowsgui -X main.installerVersion=v1.0.0" -o BlockTheSpotInstaller.exe .
+dotnet publish src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o dist
 ```
 
-### Cross-build from Linux/macOS
+Architecture:
 
-```bash
-GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-H=windowsgui -X main.installerVersion=v1.0.0" -o BlockTheSpotInstaller.exe .
+- `BlockTheSpot.Core`: catalog parsing, compatibility policy, streaming downloads, install orchestration, and transactional patch/restore. Windows operations use an injected interface, making failure paths testable.
+- `BlockTheSpot.App`: native WPF Fluent UI, view model, and Windows process/signature/installation adapter.
+- `tests`: regressions for catalog formats, pinned defaults, HTTP failures, partial downloads, cancellation, architecture checks, install ordering, backup refresh, and rollback.
+- `site`: dependency-free static download page. Spotify buttons point directly to `download.scdn.co`; version-specific LoadSpot links are not labeled as official Spotify-hosted downloads.
+
+The previous Go/Walk implementation is preserved in git history.
+
+## CI, releases, and GitHub Pages
+
+These are independent workflows:
+
+| Workflow | Trigger | Result |
+|---|---|---|
+| Installer CI | Commits/PRs touching app, tests, or build configuration | Linux/Windows tests, native UI smoke test, EXE artifact; **no release** |
+| Release installer | **Manual workflow dispatch** with an explicit version | Repeat all tests, build the self-contained EXE, publish `vX.Y.Z` with a SHA-256 checksum |
+| Download page | Commits/PRs touching `site/`, its test, or its workflow | Validate the page; deploy to Pages only on `main` |
+
+To release, update `docs/RELEASE_NOTES.md`, then use **Actions → Release installer → Run workflow**, select `main`, and enter a version such as `0.4.1`. Alternatively:
+
+```sh
+gh workflow run release.yml --ref main -f version=0.4.1
 ```
 
-### If you update the icon PNG
+Normal pushes and tags do not publish EXEs. Releases do not rebuild Pages. The page's stable “latest release” link and optional GitHub metadata fetch pick up new releases without deployment. The Pages settings must use **GitHub Actions** as the source.
 
-Rebuild the `.ico`, then regenerate app resources:
+Windows CI renders actual WPF screenshots in light and dark themes and uploads them as `windows-ui-smoke`. It does not install Spotify on hosted runners. Full install/reinstall testing belongs on a Windows test account before changing the tested compatibility pin.
 
-```bash
-convert assets/blockthespot.png -define icon:auto-resize=256,128,64,48,32,16 assets/blockthespot.ico
-go run github.com/akavel/rsrc@v0.10.2 -manifest assets/app.manifest -ico assets/blockthespot.ico -arch amd64 -o windows_app_resources_amd64.syso
-```
+## License
+
+MIT. Original installer and BlockTheSpot work by Nuzair46 and contributors; Spotify version discovery and catalog by LoaderSpot contributors. Spotify is a trademark of Spotify AB. This project is not affiliated with Spotify.
