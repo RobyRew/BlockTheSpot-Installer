@@ -13,27 +13,27 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        var smokeTest = e.Args.Length == 2 && e.Args[0] == "--smoke-test";
+        if (smokeTest) Directory.CreateDirectory(e.Args[1]);
         DispatcherUnhandledException += (_, args) =>
         {
-            var path = Path.Combine(Path.GetTempPath(), "BlockTheSpot-startup-error.log");
+            var path = smokeTest ? Path.Combine(e.Args[1], "error.txt") : Path.Combine(Path.GetTempPath(), "BlockTheSpot-startup-error.log");
             try { File.WriteAllText(path, args.Exception.ToString()); } catch (IOException) { }
-            MessageBox.Show($"BlockTheSpot encountered an error.\n\n{args.Exception.Message}\n\nLog: {path}", "BlockTheSpot");
+            if (!smokeTest) MessageBox.Show($"BlockTheSpot encountered an error.\n\n{args.Exception.Message}\n\nLog: {path}", "BlockTheSpot");
             args.Handled = true;
             Shutdown(1);
         };
-        var smokeTest = e.Args.Length == 2 && e.Args[0] == "--smoke-test";
         if (!smokeTest)
         {
             instance = new Mutex(true, @"Local\BlockTheSpotInstaller", out var created);
             if (!created) { MessageBox.Show("BlockTheSpot is already open.", "BlockTheSpot"); Shutdown(); return; }
         }
-        var window = new MainWindow(smokeTest);
-        MainWindow = window;
-        window.Show();
-        if (!smokeTest) return;
         try
         {
-            Directory.CreateDirectory(e.Args[1]);
+            var window = new MainWindow(smokeTest);
+            MainWindow = window;
+            window.Show();
+            if (!smokeTest) return;
             foreach (var key in new[] { "CardBackgroundFillColorDefaultBrush", "TextFillColorPrimaryBrush", "AccentFillColorDefaultBrush" })
                 if (window.TryFindResource(key) is null) throw new InvalidOperationException("Missing Fluent resource: " + key);
             if (window.VersionPicker.Items.Count != 1 || !window.Model.InstallCommand.CanExecute(null))
@@ -56,6 +56,7 @@ public partial class App : Application
         }
         catch (Exception error)
         {
+            if (!smokeTest) throw;
             File.WriteAllText(Path.Combine(e.Args[1], "error.txt"), error.ToString());
             Shutdown(1);
         }
