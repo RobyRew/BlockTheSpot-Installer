@@ -2,7 +2,7 @@
 
 A native Windows app for installing and restoring [BlockTheSpot](https://github.com/Nuzair46/BlockTheSpot). Built with .NET 10 WPF and Microsoft's Windows 11 Fluent theme.
 
-[Download the installer](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest/download/BlockTheSpotInstaller.exe) · [Download page](https://robyrew.github.io/BlockTheSpot-Installer/) · [Release notes](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest)
+[Download the installer](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest/download/BlockTheSpotInstaller.exe) · [Spotify version library](https://robyrew.github.io/BlockTheSpot-Installer/) · [Release notes](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest)
 
 ## Install
 
@@ -21,7 +21,7 @@ Support the artists you listen to. Please consider [Spotify Premium](https://www
 - The tested default is pinned in `src/BlockTheSpot.Core/Compatibility.cs`. It does **not** follow the newest catalog entry or change automatically when an upstream script changes. Update this constant and its tests only after verifying a new version with BlockTheSpot.
 - **Advanced → Show newer, untested Spotify versions** exposes newer LoadSpot builds and the latest official Spotify installer. These versions are not presented as compatible by default.
 - The live [LoadSpot catalog](https://loadspot.pages.dev/versions) comes from [`LoaderSpot/table`](https://github.com/LoaderSpot/table/blob/main/table/versions.json). Its predecessor [`LoaderSpot/LoaderSpot`](https://github.com/LoaderSpot/LoaderSpot) is archived. The maintained catalog includes architecture-specific download URLs, dates, and sizes.
-- **Refresh** reloads versions while preserving a valid selection. The known tested link remains available if catalog retrieval fails.
+- **Refresh** loads the compact GitHub Pages feed first (four-second deadline), then the maintained upstream catalog (eight-second deadline), while preserving a valid selection. The known tested link remains available if both fail. Startup does not wait for the patch server; its current configuration is validated when installation starts.
 - **Replace Microsoft Store edition** is opt-in and affects only the current Windows account.
 - Downloads can be cancelled. Once Spotify setup or file replacement begins, the operation finishes before the app can be closed.
 - The activity log can be saved locally. No analytics or telemetry are added by the application.
@@ -40,6 +40,8 @@ Install the SDK specified by `global.json` (.NET 10 LTS). There are no third-par
 dotnet test tests/BlockTheSpot.Tests/BlockTheSpot.Tests.csproj -c Release
 dotnet build src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release
 node --test scripts/test-site.mjs
+npm ci --prefix site
+npm run build --prefix site
 ```
 
 The core and its tests run on Windows, macOS, and Linux. WPF can be cross-compiled, but running the GUI requires Windows. Publish the standalone EXE on Windows:
@@ -53,7 +55,7 @@ Architecture:
 - `BlockTheSpot.Core`: catalog parsing, compatibility policy, streaming downloads, install orchestration, and transactional patch/restore. Windows operations use an injected interface, making failure paths testable.
 - `BlockTheSpot.App`: native WPF Fluent UI, view model, and Windows process/signature/installation adapter.
 - `tests`: regressions for catalog formats, pinned defaults, HTTP failures, partial downloads, cancellation, architecture checks, install ordering, backup refresh, and rollback.
-- `site`: dependency-free static download page. Spotify buttons point directly to `download.scdn.co`; version-specific LoadSpot links are not labeled as official Spotify-hosted downloads.
+- `site`: Astro 7 static version library, source validation and normalization, scheduled catalog updater, responsive search/filter UI, and versioned JSON endpoints. Node 24 is used in CI; dependencies are locked.
 
 The previous Go/Walk implementation is preserved in git history.
 
@@ -65,7 +67,9 @@ These are independent workflows:
 |---|---|---|
 | Installer CI | Commits/PRs touching app, tests, or build configuration | Linux/Windows tests, native UI smoke test, EXE artifact; **no release** |
 | Release installer | **Manual workflow dispatch** with an explicit version | Repeat all tests, build the self-contained EXE, publish `vX.Y.Z` with a SHA-256 checksum |
-| Download page | Commits/PRs touching `site/`, its test, or its workflow | Validate the page; deploy to Pages only on `main` |
+| Spotify download library | Commits/PRs touching `site/`, its test, or its workflow | Build and test Astro; deploy to Pages only on `main` |
+| Catalog refresh | Every six hours, or manual Pages workflow dispatch | Fetch current metadata; commit, build and deploy **only if it changed** |
+| Verify live Spotify download | Manual workflow dispatch | Download the pinned Spotify setup on Windows and verify its size and Authenticode publisher; never install it |
 
 To release, update `docs/RELEASE_NOTES.md`, then use **Actions → Release installer → Run workflow**, select `main`, and enter a version such as `0.4.1`. Alternatively:
 
@@ -73,9 +77,39 @@ To release, update `docs/RELEASE_NOTES.md`, then use **Actions → Release insta
 gh workflow run release.yml --ref main -f version=0.4.1
 ```
 
-Normal pushes and tags do not publish EXEs. Releases do not rebuild Pages. The page's stable “latest release” link and optional GitHub metadata fetch pick up new releases without deployment. The Pages settings must use **GitHub Actions** as the source.
+Normal pushes and tags do not publish EXEs. Releases do not rebuild Pages. The page's stable “latest release” link and optional GitHub metadata fetch pick up new releases without deployment. The Pages settings must use **GitHub Actions** as the source. Scheduled refreshes deploy their own generated commit because a commit made with `GITHUB_TOKEN` does not trigger another push workflow. Failed or incomplete upstream responses retain the last published catalog. GitHub may delay scheduled runs or disable schedules on inactive repositories.
 
 Windows CI renders actual WPF screenshots in light and dark themes and uploads them as `windows-ui-smoke`. It does not install Spotify on hosted runners. Full install/reinstall testing belongs on a Windows test account before changing the tested compatibility pin.
+
+## Spotify version library and API
+
+The library includes Windows x86/x64/ARM64, macOS Intel/Apple silicon, and Linux x64 packages where upstream lists them. Search by version or hash, filter platform/architecture/source, sort numerically, and share a filtered URL. The site works on mobile and has light/dark themes, keyboard navigation, pagination, and a useful first page without JavaScript.
+
+Download origins are explicit:
+
+- Current version-specific downloads are usually **LoadSpot-hosted mirrors**, not Spotify servers. The maintained catalog no longer provides official CDN URLs for these builds.
+- Historical **Spotify CDN** URLs are retained exactly as published by LoaderSpot, including installer build suffixes. Spotify may stop serving them; they are not claimed to be availability-verified. Select a mirror when an official historical URL has expired.
+- Current Windows and Mac shortcuts use Spotify's official `download.scdn.co` servers. The official Linux package is discovered from `repository.spotify.com`. The “Official Spotify only” filter never includes mirrors.
+
+No Spotify binaries are stored in this repository or hosted on Pages. The catalog does not claim BlockTheSpot support for other platforms or newer Spotify builds.
+
+| Endpoint | Contents |
+|---|---|
+| [`api/v1/catalog.json`](https://robyrew.github.io/BlockTheSpot-Installer/api/v1/catalog.json) | Full normalized catalog: schema version, last data change, tested pin, upstream sources, and installers with explicit download origins |
+| [`api/v1/windows-x64.json`](https://robyrew.github.io/BlockTheSpot-Installer/api/v1/windows-x64.json) | Compact LoadSpot-compatible Windows x64 feed at or above the tested pin, consumed by the native app |
+
+The full feed's `entries` have `id`, `version`, `fullVersion`, `platform`, `architecture`, `format`, nullable `date`/`size`, `tested`, and `sources`. Each source has `url`, `kind` (`official` or `mirror`), and `label`. Dates are ISO dates and sizes are bytes. `updatedAt` changes only when the data changes, not on every scheduled check. Consumers should tolerate added fields; breaking changes require a new API path.
+
+To refresh metadata locally and preview the site:
+
+```sh
+npm run catalog:update --prefix site
+npm run build --prefix site
+npm test --prefix site
+npm run preview --prefix site
+```
+
+Astro serves the preview under `/BlockTheSpot-Installer/`. The site build uses the committed metadata snapshot, so ordinary builds do not depend on upstream servers being available. Refreshing data never changes the tested pin.
 
 ## License
 

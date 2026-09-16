@@ -14,3 +14,6 @@ ui-smoke/
 .DS_Store
 Thumbs.db
 .codex
+# Astro
+node_modules/
+.astro/

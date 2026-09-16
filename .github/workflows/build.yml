@@ -64,7 +64,7 @@ jobs:
         shell: pwsh
         run: |
           $hash = (Get-FileHash dist/BlockTheSpotInstaller.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  BlockTheSpotInstaller.exe" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          [IO.File]::WriteAllText((Join-Path $PWD 'dist/SHA256SUMS.txt'), "$hash  BlockTheSpotInstaller.exe`n", [Text.Encoding]::ASCII)
           Copy-Item LICENSE dist/LICENSE.txt
       - uses: actions/upload-artifact@v7
         with:

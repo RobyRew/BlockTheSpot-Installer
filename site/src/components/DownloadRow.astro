@@ -1,0 +1,12 @@
+---
+import { selectSource, formatSize, platformNames } from '../lib/catalog.mjs';
+const { entry } = Astro.props;
+const source = selectSource(entry);
+---
+<tr>
+  <td><strong>{entry.version}</strong>{entry.tested && <span class="badge tested">Tested for BTS</span>}<small class="hash">{entry.fullVersion.split('.').at(-1)}</small></td>
+  <td><span class="platform-label">{platformNames[entry.platform]}</span><small>{entry.architecture} · {entry.format.toUpperCase()}</small></td>
+  <td><time datetime={entry.date ?? undefined}>{entry.date ?? 'Not listed'}</time><small>{formatSize(entry.size)}</small></td>
+  <td><span class:list={['source-label', source.kind]}>{source.label}</span><small>{source.kind === 'official' && source.label === 'Spotify CDN' ? 'Archived link · may expire' : source.kind === 'official' ? 'Direct download' : 'Community hosted'}</small></td>
+  <td class="row-action"><a class="download-link" href={source.url} aria-label={`Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${source.label}`}>Download <span aria-hidden="true">↗</span></a></td>
+</tr>
