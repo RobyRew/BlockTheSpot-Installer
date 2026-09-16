@@ -38,6 +38,9 @@ public partial class App : Application
                 if (window.TryFindResource(key) is null) throw new InvalidOperationException("Missing Fluent resource: " + key);
             if (window.VersionPicker.Items.Count != 1 || !window.Model.InstallCommand.CanExecute(null))
                 throw new InvalidOperationException("Initial UI bindings did not initialize.");
+            // RenderTargetBitmap cannot capture the compositor's Mica backdrop.
+            // Use Fluent's opaque fallback only for test screenshots.
+            window.SetResourceReference(Window.BackgroundProperty, "WindowBackground");
             foreach (var dark in new[] { false, true })
             {
                 ThemeMode = dark ? ThemeMode.Dark : ThemeMode.Light;
