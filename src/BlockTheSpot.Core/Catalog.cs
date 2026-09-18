@@ -40,6 +40,8 @@ public sealed record SpotifyChoice(string? FullVersion, Uri Url, string? Date = 
     public bool IsLegacyPin => string.Equals(FullVersion, Compatibility.LegacyVersion, StringComparison.OrdinalIgnoreCase);
     // Which bundled kit this build patches with; the newest kit always reads "Current".
     public string Method => Compatibility.MethodOf(FullVersion);
+    // The chip only adds information when it differs from the badge (i.e. on non-pin builds).
+    public bool ShowMethod => !string.Equals(Badge, Method, StringComparison.Ordinal);
     public string Source => SourceOf(Url);
     public string Detail => string.Join(" · ", new[] { IsLatest ? "Current release" : Date, Size > 0 ? $"{Size / 1048576d:F0} MiB" : null, Source,
         Sha256 is null ? null : "SHA-256" }.Where(s => !string.IsNullOrWhiteSpace(s)));

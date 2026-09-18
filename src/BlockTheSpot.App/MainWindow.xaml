@@ -76,7 +76,7 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                                         <Border Style="{StaticResource Badge}"><TextBlock Text="{Binding Badge}" FontSize="11"/></Border>
-                                        <Border Style="{StaticResource Chip}"><TextBlock Text="{Binding Method}" FontSize="11"/></Border>
+                                        <Border Style="{StaticResource Chip}" Visibility="{Binding ShowMethod, Converter={StaticResource BoolVisibility}}"><TextBlock Text="{Binding Method}" FontSize="11"/></Border>
                                     </StackPanel>
                                     <TextBlock Grid.Column="1" Text="{Binding Detail}" Style="{StaticResource Hint}" Margin="12,0,4,0" VerticalAlignment="Center"
                                                HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
