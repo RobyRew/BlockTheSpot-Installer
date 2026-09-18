@@ -41,7 +41,9 @@ public sealed class CatalogTests
     [InlineData("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-arm64.exe")]
     [InlineData("https://loadspot.amd64fox1.workers.dev.evil.test/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe")]
     [InlineData("https://user@loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe")]
-    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe?fauth=abc")]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe?fauth=abc&x=1")]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe?token=abc")]
+    [InlineData("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe?fauth=abc")]
     [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe")]
     [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.668.g7b5cc0ce-4062.exe")]
     public void RejectsWrongArchitectureAndUnexpectedDownloadHosts(string url) =>
@@ -140,6 +142,20 @@ public sealed class CatalogTests
     [InlineData("http://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe")]
     [InlineData("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-arm64.exe")]
     public void PartialVersionsAndForeignLinksAreNotInstallable(string input) => Assert.Null(SpotifyVersions.TryCustom(input));
+
+    [Fact]
+    public void SignedSpotifyLinksAreOfficialAndTypedOnesBecomeChoices()
+    {
+        var signed = new Uri("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.3.1.234.g59d6bf59-5377.exe?fauth=eyJr.eyJp.sig-1_2~3");
+        Assert.True(SpotifyVersions.IsOfficial(signed));
+        Assert.True(SpotifyVersions.IsCatalogDownload(signed, "1.3.1.234.g59d6bf59"));
+        var choice = SpotifyVersions.TryCustom(signed.AbsoluteUri)!;
+        Assert.Equal(signed, choice.Url);
+        Assert.Equal("Spotify", choice.Source);
+        var fed = SpotifyVersions.Read("""{"1.3.1.234":{"fullversion":"1.3.1.234.g59d6bf59","win":{"x64":{"url":"https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.3.1.234.g59d6bf59-x64.exe","official":"https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.3.1.234.g59d6bf59-5377.exe?fauth=a.b.c"}}}}""", "1.2.93.667").Choices[1];
+        Assert.Equal("?fauth=a.b.c", fed.Url.Query);
+        Assert.Equal(["upgrade.scdn.co", "loadspot.amd64fox1.workers.dev"], fed.Urls.Select(u => u.Host));
+    }
 
     [Fact]
     public void TheLatestOfficialLinkIsRecognizedAsSpotify()

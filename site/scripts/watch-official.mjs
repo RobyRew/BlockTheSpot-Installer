@@ -157,14 +157,17 @@ export function reconcileUpdateService(state, probe, checkedAt) {
     const before = offers[platform];
     const changed = before?.fullVersion !== result.fullVersion || before?.httpPrefix !== result.httpPrefix || before?.binaryHash !== result.binaryHash;
     // poll_interval is jittered per response and left out, so an unchanged offer stays byte-identical.
+    // The signed link is a fresh token every response; it is kept until a week before it expires.
+    const signed = signedLink(changed ? null : before, result, checkedAt);
     offers[platform] = { fullVersion: result.fullVersion, os: result.os, architecture: result.architecture, httpPrefix: result.httpPrefix,
-      binaryHash: result.binaryHash, targetVersion: result.targetVersion, upgradeType: result.upgradeType, seenAt: changed ? checkedAt : before.seenAt };
+      binaryHash: result.binaryHash, targetVersion: result.targetVersion, upgradeType: result.upgradeType, seenAt: changed ? checkedAt : before.seenAt, ...signed };
     if (result.os !== 'windows') continue;
     const build = state.builds.find(b => b.platform === 'windows' && b.architecture === result.architecture && b.fullVersion.toLowerCase() === result.fullVersion.toLowerCase());
     if (!build) { missing.push(result); continue; }
     const hash = (result.binaryHash ?? '').toLowerCase();
     const matches = hash.length > 0 && (hash === build.sha256 || hash === build.sha1);
-    build.updateService = { httpPrefix: result.httpPrefix, binaryHash: result.binaryHash, targetVersion: result.targetVersion, seenAt: build.updateService?.seenAt ?? checkedAt };
+    build.updateService = { httpPrefix: result.httpPrefix, binaryHash: result.binaryHash, targetVersion: result.targetVersion,
+      seenAt: build.updateService?.seenAt ?? checkedAt, ...signedLink(build.updateService, result, checkedAt) };
     build.sensors = [...new Set([...(build.sensors ?? ['permanent-url']), 'update-service'])];
     if (matches) { build.verified = 'binary_hash'; delete build.conflict; }
     else if (hash) build.conflict = `Spotify's binary_hash ${hash} matches neither sha256 nor sha1 of the file downloaded from ${build.url}`;
@@ -188,6 +191,12 @@ export function archiveCandidates(build, heads, probe) {
   if (offer?.url) candidates.push({ url: offer.url, size: build.size });
   candidates.push({ url: `https://loadspot.amd64fox1.workers.dev/download/spotify_installer-${build.fullVersion}-${build.architecture}.exe`, size: build.size });
   return { watched, candidates };
+}
+
+function signedLink(previous, result, checkedAt) {
+  const keep = previous?.signedUrl && previous.signedUntil && Date.parse(previous.signedUntil) - Date.parse(checkedAt) > 7 * 86_400_000;
+  if (keep) return { signedUrl: previous.signedUrl, signedUntil: previous.signedUntil };
+  return result.url && result.signedUntil ? { signedUrl: result.url, signedUntil: result.signedUntil } : {};
 }
 
 /** Runs the Python probe when credentials are configured; null when skipped or unusable. */

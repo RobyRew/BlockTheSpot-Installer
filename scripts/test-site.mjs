@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial } from '../site/src/lib/catalog.mjs';
+import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial, isExpired, sourceNote } from '../site/src/lib/catalog.mjs';
 import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical, archiveCandidates } from '../site/scripts/watch-official.mjs';
 const catalog = JSON.parse(await readFile(new URL('../site/data/catalog.json', import.meta.url), 'utf8'));
 const official = JSON.parse(await readFile(new URL('../site/data/official.json', import.meta.url), 'utf8'));
@@ -52,8 +52,9 @@ test('Merge preserves exact historic Spotify URLs and maintained mirror alternat
   const merged = mergeCatalogs([official], [tested]);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].sources.length, 2);
-  assert.equal(selectSource(merged[0]).kind, 'mirror');
+  assert.equal(selectSource(merged[0]).kind, 'mirror', 'a bare historic CDN link is known to answer 403 and never becomes the download');
   assert.equal(selectSource(merged[0], 'official').kind, 'official');
+  assert.ok(isExpired(selectSource(merged[0], 'official')));
   assert.equal(merged[0].size, tested.size);
   assert.deepEqual(mergeCatalogs(merged, [official], [tested]), merged);
 });
@@ -125,7 +126,7 @@ test('Official latest links and release link are explicit, with accessible page 
   assert.ok(html.includes('Official Spotify only'));
   assert.ok(html.includes('Older official CDN links may have expired'));
   const row = await readFile(new URL('../site/src/components/DownloadRow.astro', import.meta.url), 'utf8');
-  assert.ok(row.includes('orderedSources(entry)') && row.includes('alt-links'), 'rows offer the best source first and the other options beside it');
+  assert.ok(row.includes('orderedSources(entry)') && row.includes('alt-links') && row.includes('official-path'), 'rows offer the best source first, the other options beside it, and expired official paths as text');
 });
 
 // --- release watcher -------------------------------------------------------------------------------
@@ -229,6 +230,28 @@ test('Archive backfill prefers the live permanent URL, then the signed link, the
   assert.deepEqual(archiveCandidates({ ...build, platform: 'macos' }, {}, null), { watched: null, candidates: [] });
 });
 
+test('A signed Spotify link is the official download while valid and a visible record afterwards', () => {
+  const signed = 'https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.85.519.g549a528b-5377.exe?fauth=eyJr.eyJp.sig-1_2~3';
+  assert.equal(sourceFor(signed, '1.2.85.519.g549a528b', 'windows', 'x64').label, 'Spotify CDN');
+  assert.equal(sourceFor(signed + '&x=1', '1.2.85.519.g549a528b', 'windows', 'x64'), null);
+  assert.equal(sourceFor('https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.85.519.g549a528b-x64.exe?fauth=a.b.c', '1.2.85.519.g549a528b', 'windows', 'x64'), null);
+  const build = { fullVersion: '1.2.85.519.g549a528b', platform: 'windows', architecture: 'x64', sha256: 'a'.repeat(64), size: 1, lastModified: '2026-03-13T10:00:00.000Z',
+    url: 'https://download.scdn.co/SpotifyFullSetupX64.exe', etag: '"gone"',
+    updateService: { httpPrefix: signed.split('?')[0], signedUrl: signed, signedUntil: '2026-10-18T00:00:00Z', binaryHash: 'b'.repeat(40) } };
+  const before = applyOfficial(entries, { watched: {}, builds: [build] }, Date.parse('2026-10-01T00:00:00Z'));
+  const live = before.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
+  assert.equal(selectSource(live).url, signed, 'the signed link outranks the mirror while valid');
+  assert.equal(sourceNote(selectSource(live)), 'Spotify\u2019s signed link · valid until 2026-10-18');
+  assert.equal(windowsFeed(before)['1.2.85.519'].win.x64.official, signed);
+  const after = applyOfficial(entries, { watched: {}, builds: [build] }, Date.parse('2026-11-01T00:00:00Z'));
+  const gone = after.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
+  assert.equal(selectSource(gone).kind, 'mirror');
+  const record = gone.sources.find(s => s.label === 'Spotify CDN');
+  assert.ok(record && isExpired(record) && record.url === signed.split('?')[0], 'the bare official path stays on the row');
+  assert.ok(gone.sources.find(s => s.label === 'Spotify (current build)')?.expired, 'and so does the permanent URL it once lived at');
+  assert.equal(windowsFeed(after)['1.2.85.519'].win.x64.official, signed.split('?')[0], 'the installer still tries the official path first');
+});
+
 test('A run that learned nothing new is byte-identical and not a change', () => {
   const state = { schemaVersion: 1, watched: { 'windows-x64': { etag: '"e"', size: 1, lastModified: 'x', checkedAt: 't1', changedAt: 't0' } },
     updateService: { claim: '1.2.0.0', checkedAt: 't1', offers: { Win32_x86_64: { fullVersion: 'v', seenAt: 't0' } } }, builds: [{ fullVersion: 'v', sha256: 'a', sensors: ['permanent-url'] }] };
@@ -273,7 +296,8 @@ test('applyOfficial overlays hashes, the current permanent link and archive copi
   const stale = applyOfficial(entries, { watched: { 'windows-x64': { etag: '"new"' } }, builds: [build] });
   const entry = stale.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
   assert.equal(entry.sha256, 'a'.repeat(64));
-  assert.deepEqual(entry.sources.map(s => s.label).sort(), ['GitHub archive', 'LoadSpot mirror'], 'a permanent link is not attached once the ETag moved on');
+  assert.deepEqual(entry.sources.map(s => s.label).sort(), ['GitHub archive', 'LoadSpot mirror', 'Spotify (current build)'], 'the permanent link stays on record once the ETag moved on');
+  assert.ok(entry.sources.find(s => s.label === 'Spotify (current build)').expired, 'but as expired, never as the download');
   assert.equal(selectSource(entry).label, 'GitHub archive');
   const live = applyOfficial(entries, { watched: { 'windows-x64': { etag: '"old"' } }, builds: [build] });
   const current = live.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
@@ -288,14 +312,15 @@ test('applyOfficial overlays hashes, the current permanent link and archive copi
   const fresh = applyOfficial(entries, { watched: {}, builds: [{ ...build, fullVersion: '1.3.9.1.gabcdef12', archive: undefined, etag: '"x"' }] });
   const added = fresh.find(e => e.id === '1.3.9.1.gabcdef12-windows-x64');
   assert.equal(added.date, '2026-03-13');
-  assert.deepEqual(added.sources, [], 'a build with neither a current link nor an archive is listed by hash only');
-  assert.equal(windowsFeed(fresh)['1.3.9.1'], undefined, 'a hash-only build is left out of the installer feed instead of breaking it');
-  assert.equal(filterCatalog(fresh, { platform: 'windows', query: '1.3.9.1' }).length, 0, 'and out of the library table');
+  assert.deepEqual(added.sources.map(s => [s.label, isExpired(s)]), [['Spotify (current build)', true]], 'a build with neither a live link nor an archive keeps only its record');
+  assert.equal(windowsFeed(fresh)['1.3.9.1'], undefined, 'a build without any downloadable link is left out of the installer feed instead of breaking it');
+  assert.equal(filterCatalog(fresh, { platform: 'windows', query: '1.3.9.1' }).length, 1, 'but stays visible in the library table');
+  assert.deepEqual(windowsFeed([{ ...added, sources: [] }]), {}, 'and so is a build with no sources at all');
   const offered = applyOfficial(entries, { watched: {}, builds: [{ ...build, fullVersion: '1.3.9.1.gabcdef12', archive: undefined, etag: '"x"',
     updateService: { httpPrefix: 'https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.3.9.1.gabcdef12-77.exe', binaryHash: 'b'.repeat(40) } }] });
   const withPrefix = offered.find(e => e.id === '1.3.9.1.gabcdef12-windows-x64');
-  assert.deepEqual(withPrefix.sources.map(s => s.label), ['Spotify CDN'], "the update service's http_prefix is kept as Spotify's versioned link");
-  assert.equal(windowsFeed(offered)['1.3.9.1'].win.x64.url, withPrefix.sources[0].url);
+  assert.deepEqual(withPrefix.sources.map(s => s.label), ['Spotify (current build)', 'Spotify CDN'], "the update service's http_prefix is kept as Spotify's versioned link");
+  assert.equal(windowsFeed(offered)['1.3.9.1'].win.x64.url, withPrefix.sources[1].url, 'the installer gets the official path and falls back from it');
   assert.equal(applyOfficial(entries, null), entries);
   assert.equal(applyOfficial(entries, { builds: [{ fullVersion: 'bad', sha256: 'x' }] }).length, entries.length);
 });

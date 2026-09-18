@@ -169,6 +169,9 @@ def self_test() -> None:
     assert offer.url == prefix.decode() + "?fauth=abc.def" and offer.binary_hash == digest.hex() and offer.poll_interval == 14288, offer
     assert offer.upgrade_type == 2 and offer.flags == 3 and not offer.warnings, offer
     assert parse_update_response(encode_field(2, 14288)) is None, "no upgrade must decode to None"
+    token = base64.urlsafe_b64encode(b'{"alg":"RS256"}').decode().rstrip("=") + "." + base64.urlsafe_b64encode(b'{"iss":"scdn-url-signer","exp":1792311229}').decode().rstrip("=") + ".sig"
+    assert signed_until("?fauth=" + token) == "2026-10-18T08:13:49Z", signed_until("?fauth=" + token)
+    assert signed_until("?fauth=abc.def") is None
     print("self-test passed")
 
 
@@ -233,9 +236,22 @@ def probe(session, platform: str, claim: str) -> dict:
         return record
     os_name, arch = PLATFORMS[platform]
     record.update({"fullVersion": offer.full_version, "os": os_name, "architecture": arch, "httpPrefix": offer.http_prefix,
-                   "url": offer.url, "binaryHash": offer.binary_hash, "targetVersion": offer.target_version,
-                   "upgradeType": offer.upgrade_type, "flags": offer.flags, "pollInterval": offer.poll_interval, "warnings": offer.warnings})
+                   "url": offer.url, "signedUntil": signed_until(offer.http_suffix), "binaryHash": offer.binary_hash,
+                   "targetVersion": offer.target_version, "upgradeType": offer.upgrade_type, "flags": offer.flags,
+                   "pollInterval": offer.poll_interval, "warnings": offer.warnings})
     return record
+
+
+def signed_until(http_suffix: str) -> str | None:
+    """Expiry of the ?fauth= token: a JWT from scdn-url-signer whose payload carries exp (read, not verified)."""
+    match = re.match(r"^\?fauth=[^.]+\.([A-Za-z0-9_-]+)\.", http_suffix)
+    if not match:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(match.group(1) + "=" * (-len(match.group(1)) % 4)))
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(int(payload["exp"])))
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def main() -> int:

@@ -109,7 +109,27 @@ Live run on 2026-09-18 with a stored session (claiming version 1.2.0.0), which s
 - `poll_interval` varied between 11258 s and 14669 s across platforms (about 3–4 h, jittered).
 
 What the catalog and the app get from this: `sha256` per observed build, the permanent URL with
-its ETag while the build is current, the archive copy when one exists, and Spotify's `http_prefix`.
+its ETag while the build is current, the signed link while its token lasts, the archive copy when
+one exists, and Spotify's `http_prefix`.
+
+### The official-link record
+
+Every build keeps Spotify's own address on its row for good, downloadable or not. Sources are
+ordered Spotify first (permanent URL while current → signed link while valid → apt repository),
+then the CI archive copy, then the LoadSpot mirror; expired official links sort last, are never the
+download button, and are rendered as the bare path so the record stays visible and copyable.
+
+Coverage of that record, checked 2026-09-18 against the git history of `LoaderSpot/table`
+(474 revisions of `versions.json` since 2025-02) and the archived `LoaderSpot/LoaderSpot`:
+
+- 1.2.7.1277 → 1.2.85.519: Spotify's `upgrade.scdn.co` paths for every release build, already in
+  the catalog from the legacy feed. The history holds 71 more x64 links, all `buildType: Master`
+  (internal-channel builds LoadSpot later removed), excluded from the catalog by design.
+- 1.2.86 → 1.3.1.223 (2026-03 to 2026-09): no public record exists. LoadSpot switched to mirror-only
+  entries between 2026-01-13 (224 official links) and 2026-04-05 (none), and the `-<n>` build number
+  cannot be reconstructed. This includes the tested build 1.2.93.667.
+- 1.3.1.234 onward: the update-service sensor records `http_prefix` and the signed link for each
+  build as it is released.
 
 ## What the installer does with this
 

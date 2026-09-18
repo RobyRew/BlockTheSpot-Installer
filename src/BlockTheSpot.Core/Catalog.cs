@@ -81,7 +81,7 @@ public static partial class SpotifyVersions
         url.Scheme == "https" && url.IsDefaultPort && url.UserInfo.Length == 0 && url.Query.Length == 0 && url.Fragment.Length == 0;
 
     /// <summary>A link on Spotify's own hosts: the permanent full installer or a versioned x64 upgrade package.</summary>
-    public static bool IsOfficial(Uri url) => IsPlainHttps(url) && (url == Sources.LatestSpotify || VersionFromOfficial(url) is not null);
+    public static bool IsOfficial(Uri url) => (IsPlainHttps(url) && url == Sources.LatestSpotify) || VersionFromOfficial(url) is not null;
 
     public static bool IsMirror(Uri url, string version) =>
         IsPlainHttps(url) && url.Host == Sources.MirrorHost && url.AbsolutePath == $"/download/spotify_installer-{version}-x64.exe";
@@ -102,9 +102,14 @@ public static partial class SpotifyVersions
         return match.Success ? match.Groups[1].Value : null;
     }
 
+    // Spotify's versioned links carry a signed, 30-day ?fauth= token; it is the only query string accepted anywhere.
+    private static bool IsSignedUpgrade(Uri url) =>
+        url.Scheme == "https" && url.IsDefaultPort && url.UserInfo.Length == 0 && url.Fragment.Length == 0 && url.Host == Sources.UpgradeHost
+        && Regex.IsMatch(url.Query, @"^\?fauth=[A-Za-z0-9._~-]+$", RegexOptions.CultureInvariant);
+
     private static string? VersionFromOfficial(Uri url)
     {
-        if (!IsPlainHttps(url) || url.Host != Sources.UpgradeHost) return null;
+        if (!(IsPlainHttps(url) || IsSignedUpgrade(url)) || url.Host != Sources.UpgradeHost) return null;
         var match = Regex.Match(url.AbsolutePath, @"^/upgrade/client/win32-x86_64/spotify_installer-(1\.\d+\.\d+\.\d+\.g[0-9a-fA-F]+)-[0-9]+\.exe$", RegexOptions.CultureInvariant);
         return match.Success ? match.Groups[1].Value : null;
     }
@@ -120,7 +125,7 @@ public static partial class SpotifyVersions
         if (string.IsNullOrEmpty(input)) return null;
         if (FullVersionPattern().IsMatch(input))
             return new(input, MirrorFor(input), Custom: true);
-        if (!Uri.TryCreate(input, UriKind.Absolute, out var url) || !IsPlainHttps(url)) return null;
+        if (!Uri.TryCreate(input, UriKind.Absolute, out var url) || !(IsPlainHttps(url) || IsSignedUpgrade(url))) return null;
         if (url == Sources.LatestSpotify) return SpotifyChoice.Latest;
         if (VersionFromOfficial(url) is { } official) return new(official, url, Mirror: MirrorFor(official), Custom: true);
         if (VersionFromArchive(url) is { } archived) return new(archived, url, Mirror: MirrorFor(archived), Custom: true);

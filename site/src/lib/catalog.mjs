@@ -32,7 +32,9 @@ export function sourceFor(raw, fullVersion, platform, architecture) {
   if (!versionPattern.test(fullVersion)) return null;
   let url;
   try { url = new URL(raw); } catch { return null; }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.search || url.hash) return null;
+  // Spotify's versioned links carry a signed ?fauth= token; no other query string is accepted anywhere.
+  const signed = url.hostname === 'upgrade.scdn.co' && /^\?fauth=[A-Za-z0-9._~-]+$/.test(url.search);
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || (url.search && !signed) || url.hash) return null;
   const target = targets.find(([, , p, a]) => p === platform && a === architecture);
   if (!target) return null;
   const [, , , , directory, format] = target;
@@ -115,18 +117,29 @@ export function mergeCatalogs(...catalogs) {
     architectures.indexOf(a.architecture) - architectures.indexOf(b.architecture) || a.id.localeCompare(b.id));
 }
 
-// Permanent Spotify links and the apt repository never expire; the CI archive is a copy taken from
-// them; LoadSpot mirrors are maintained; old Spotify CDN links have expired and come last.
-const preference = ['Spotify (current build)', 'Spotify repository', 'GitHub archive', 'LoadSpot mirror', 'Spotify CDN'];
+// Spotify's own links first: the permanent full installer while it serves the build, its signed
+// versioned link while the token lasts, the apt repository; then the CI archive copy, then the
+// maintained LoadSpot mirror. Expired official links stay listed, after everything that downloads.
+const preference = ['Spotify (current build)', 'Spotify CDN', 'Spotify repository', 'GitHub archive', 'LoadSpot mirror'];
+function nextRelease(official, build) {
+  const later = official.builds.filter(b => b.platform === build.platform && b.architecture === build.architecture && b.etag && b.lastModified > build.lastModified)
+    .toSorted((a, b) => a.lastModified.localeCompare(b.lastModified))[0];
+  return later?.lastModified?.slice(0, 10) ?? null;
+}
+/** A versioned Spotify link downloads only with its signed token; the bare path is kept as the build's record. */
+export function isExpired(source) { return Boolean(source.expired) || (source.label === 'Spotify CDN' && !/\?fauth=/.test(source.url)); }
 export function orderedSources(entry, kind = 'all') {
   return entry.sources.filter(source => kind === 'all' || source.kind === kind)
-    .toSorted((a, b) => preference.indexOf(a.label) - preference.indexOf(b.label));
+    .toSorted((a, b) => Number(isExpired(a)) - Number(isExpired(b)) || preference.indexOf(a.label) - preference.indexOf(b.label));
 }
+/** Best source first; an entry whose only sources have expired still lists, so the record stays visible. */
 export function selectSource(entry, kind = 'all') { return orderedSources(entry, kind)[0]; }
 export function sourceNote(source) {
+  if (isExpired(source)) return source.note ?? (source.label === 'Spotify CDN' ? 'Spotify\u2019s path for this build · signed token expired' : 'No longer served here');
   if (source.kind === 'archive') return 'Copied from Spotify by CI · hash listed';
   if (source.kind === 'mirror') return 'Community hosted';
-  return source.label === 'Spotify CDN' ? 'Archived link · may have expired' : 'Direct download';
+  if (source.label === 'Spotify CDN') return source.until ? `Spotify\u2019s signed link · valid until ${source.until.slice(0, 10)}` : 'Archived link · may have expired';
+  return 'Direct download';
 }
 
 /**
@@ -135,7 +148,7 @@ export function sourceNote(source) {
  * build currently behind a permanent URL, that URL with its ETag. Nothing here is persisted into
  * catalog.json, so a permanent link never outlives the build it pointed at.
  */
-export function applyOfficial(entries, official) {
+export function applyOfficial(entries, official, now = Date.now()) {
   if (!official?.builds?.length) return entries;
   const current = new Set(Object.values(official.watched ?? {}).map(watched => watched.etag));
   const observed = [];
@@ -144,12 +157,18 @@ export function applyOfficial(entries, official) {
     const sources = [];
     if (current.has(build.etag) && sourceFor(build.url, build.fullVersion, build.platform, build.architecture)?.label === 'Spotify (current build)')
       sources.push({ url: build.url, kind: 'official', label: 'Spotify (current build)', etag: build.etag });
+    else if (build.etag && sourceFor(build.url, build.fullVersion, build.platform, build.architecture)?.label === 'Spotify (current build)')
+      // Spotify's full installer served this build until the next release; the address now serves a newer one.
+      sources.push({ url: build.url, kind: 'official', label: 'Spotify (current build)', expired: true, note: `Served this build until ${nextRelease(official, build) ?? 'the next release'}` });
+    // The update service's signed link is Spotify's direct download for 30 days; afterwards the bare
+    // versioned path stays on record, visibly expired, like the historical CDN links.
+    const service = build.updateService ?? {};
+    const live = service.signedUrl && service.signedUntil && Date.parse(service.signedUntil) > now && sourceFor(service.signedUrl, build.fullVersion, build.platform, build.architecture);
+    if (live?.label === 'Spotify CDN') sources.push({ ...live, until: service.signedUntil });
+    else if (service.httpPrefix && sourceFor(service.httpPrefix, build.fullVersion, build.platform, build.architecture)?.label === 'Spotify CDN')
+      sources.push({ url: service.httpPrefix, kind: 'official', label: 'Spotify CDN', expired: true });
     const archive = build.archive && sourceFor(build.archive, build.fullVersion, build.platform, build.architecture);
     if (archive?.kind === 'archive') sources.push(archive);
-    // The update service's http_prefix is Spotify's versioned link; it expires, but it is kept like
-    // the historical CDN links so the exact official path of every build stays on record.
-    const prefix = build.updateService?.httpPrefix && sourceFor(build.updateService.httpPrefix, build.fullVersion, build.platform, build.architecture);
-    if (prefix?.label === 'Spotify CDN') sources.push(prefix);
     observed.push({
       id: `${build.fullVersion}-${build.platform}-${build.architecture}`,
       version: build.fullVersion.split('.').slice(0, 4).join('.'), fullVersion: build.fullVersion,
@@ -176,21 +195,24 @@ export function filterCatalog(entries, { query = '', platform = 'all', architect
 // its `etag` while that build is current, otherwise the historical upgrade.scdn.co link, which
 // Spotify has usually expired. `archive` is the CI copy and `sha256` the hash CI took from Spotify's file.
 export function windowsFeed(entries) {
-  // A build known only by its hash (no longer current, not mirrored, not archived) has nothing to offer the installer.
-  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64' && entry.sources.length > 0).map(entry => {
-    const find = label => entry.sources.find(source => source.label === label);
+  // A build with no link at all (no longer current, not mirrored, not archived) has nothing to offer the installer.
+  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64').flatMap(entry => {
+    const find = label => entry.sources.find(source => source.label === label && !isExpired(source));
     const current = find('Spotify (current build)');
-    const official = current ?? find('Spotify CDN');
+    // Spotify first: the permanent URL while current, the signed link while valid, else the bare path the app tries and falls back from.
+    const official = current ?? find('Spotify CDN') ?? entry.sources.find(source => source.label === 'Spotify CDN');
     const mirror = find('LoadSpot mirror')?.url;
     const archive = find('GitHub archive')?.url;
-    return [entry.version, { fullversion: entry.fullVersion, win: { x64: {
-      url: mirror ?? archive ?? official.url,
+    const url = mirror ?? archive ?? official?.url;
+    if (!url) return [];
+    return [[entry.version, { fullversion: entry.fullVersion, win: { x64: {
+      url,
       ...(official && (mirror || archive) ? { official: official.url } : {}),
       ...(current ? { etag: current.etag } : {}),
       ...(archive ? { archive } : {}),
       ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
       ...(entry.date ? { date: entry.date.split('-').reverse().join('.') } : {}), size: entry.size ?? 0,
-    } } }];
+    } } }]];
   }));
 }
 

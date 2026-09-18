@@ -1,4 +1,4 @@
-import { filterCatalog, orderedSources, sourceNote, formatSize, platformNames } from './catalog.mjs';
+import { filterCatalog, orderedSources, sourceNote, isExpired, formatSize, platformNames } from './catalog.mjs';
 
 const find = id => document.getElementById(id);
 const controls = { query: find('search'), architecture: find('architecture'), source: find('source'), sort: find('sort') };
@@ -26,24 +26,40 @@ function row(entry) {
   platform.append(element('span', platformNames[entry.platform], 'platform-label'), element('small', `${entry.architecture} · ${entry.format.toUpperCase()}`));
   const date = element('td');
   date.append(element('span', entry.date ?? 'Not listed'), element('small', formatSize(entry.size)));
-  const [source, ...others] = orderedSources(entry, state.source);
+  const ordered = orderedSources(entry, state.source);
+  const source = ordered.find(candidate => !isExpired(candidate)) ?? ordered[0];
+  const others = ordered.filter(candidate => candidate !== source);
   const sourceCell = element('td');
   sourceCell.append(element('span', source.label, `source-label ${source.kind}`), element('small', sourceNote(source)));
   const action = element('td', null, 'row-action');
-  const download = element('a', 'Download ↗', 'download-link');
-  download.href = source.url;
-  if (entry.sha256) download.title = `SHA-256 ${entry.sha256}`;
-  download.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${source.label}`);
-  action.append(download);
-  if (others.length) {
+  if (isExpired(source)) {
+    const none = element('span', 'No download', 'download-link expired');
+    none.title = sourceNote(source);
+    action.append(none);
+  } else {
+    const download = element('a', 'Download ↗', 'download-link');
+    download.href = source.url;
+    if (entry.sha256) download.title = `SHA-256 ${entry.sha256}`;
+    download.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${source.label}`);
+    action.append(download);
+  }
+  const live = others.filter(other => !isExpired(other));
+  if (live.length) {
     const alternatives = element('small', 'also: ', 'alt-links');
-    for (const other of others) {
+    for (const other of live) {
       const link = element('a', other.label);
       link.href = other.url; link.title = sourceNote(other);
       link.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${other.label}`);
       alternatives.append(link);
     }
     action.append(alternatives);
+  }
+  // Spotify's own paths stay on the row as a record of the build, selectable, even once they answer 403.
+  for (const other of others.filter(other => isExpired(other))) {
+    const path = element('small', null, 'official-path');
+    path.title = sourceNote(other);
+    path.append(element('span', `${other.label} · expired`, 'expired-label'), element('code', other.url));
+    action.append(path);
   }
   tr.append(version, platform, date, sourceCell, action);
   return tr;
