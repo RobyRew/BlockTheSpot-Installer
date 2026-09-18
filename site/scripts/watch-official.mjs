@@ -173,6 +173,23 @@ export function reconcileUpdateService(state, probe, checkedAt) {
   return missing;
 }
 
+/**
+ * Where a recorded build can still be fetched for the archive, best source first: Spotify's permanent
+ * URL while its ETag is the one recorded, the update service's signed link (valid 30 days), then the
+ * mirror's stable filename. Whatever the source, the upload happens only if the bytes hash to the
+ * SHA-256 CI recorded from Spotify, so an archive copy is always Spotify's file.
+ */
+export function archiveCandidates(build, heads, probe) {
+  const watched = build.platform === 'windows' ? WATCHED.find(w => w.platform === 'windows' && w.architecture === build.architecture) : null;
+  if (!watched) return { watched: null, candidates: [] };
+  const candidates = [];
+  if (heads[watched.id]?.etag === build.etag) candidates.push({ url: watched.url, etag: build.etag, size: build.size });
+  const offer = Object.values(probe?.results ?? {}).find(r => r?.os === 'windows' && r.architecture === build.architecture && r.fullVersion?.toLowerCase() === build.fullVersion.toLowerCase());
+  if (offer?.url) candidates.push({ url: offer.url, size: build.size });
+  candidates.push({ url: `https://loadspot.amd64fox1.workers.dev/download/spotify_installer-${build.fullVersion}-${build.architecture}.exe`, size: build.size });
+  return { watched, candidates };
+}
+
 /** Runs the Python probe when credentials are configured; null when skipped or unusable. */
 export function runProbe({ run = spawnSync, env = process.env } = {}) {
   if (!env.SPOTIFY_CREDENTIALS && !env.SPOTIFY_CREDENTIALS_FILE) return null;
@@ -207,7 +224,7 @@ async function main() {
     ensureRelease(tag, repository);
     const asset = archive(file, tag, repository);
     const build = { fullVersion: file.fullVersion, platform: watched.platform, architecture: watched.architecture, sha256: file.sha256, sha1: file.sha1,
-      size: file.size, lastModified: file.lastModified, capturedAt: checkedAt, ...extra, ...(asset ? { archive: asset } : {}) };
+      size: file.size, lastModified: file.lastModified, capturedAt: checkedAt, ...extra, ...(asset ? { archive: asset, archivedFrom: new URL(extra.url).host } : {}) };
     captures.push(build);
     console.log(`${watched.id}: ${file.fullVersion} sha256=${file.sha256}${asset ? ` archived at ${asset}` : ''}`);
     return build;
@@ -236,6 +253,23 @@ async function main() {
       merged.updateService = next.updateService;
       reconcileUpdateService(merged, probe, checkedAt);
       Object.assign(next, merged);
+    }
+    // Archiving may be switched on after builds were recorded: backfill what is still obtainable.
+    if (tag) {
+      for (const build of next.builds.filter(b => !b.archive && b.platform === 'windows')) {
+        const { watched, candidates } = archiveCandidates(build, heads, probe);
+        for (const candidate of candidates) {
+          try {
+            const file = await capture(watched, { ...candidate, expectVersion: build.fullVersion }, directory);
+            if (file.sha256 !== build.sha256) { console.warn(`${watched.id}: ${candidate.url} hashes to ${file.sha256}, not the recorded ${build.sha256}; not archived`); continue; }
+            ensureRelease(tag, repository);
+            build.archive = archive(file, tag, repository);
+            build.archivedFrom = new URL(candidate.url).host;
+            console.log(`${watched.id}: ${build.fullVersion} archived from ${build.archivedFrom} at ${build.archive}`);
+            break;
+          } catch (error) { console.warn(`${watched.id}: ${candidate.url}: ${error.message}`); }
+        }
+      }
     }
     const differs = !previous || canonical(previous) !== canonical(next);
     if (differs) await writeFile(target, serialize(next));

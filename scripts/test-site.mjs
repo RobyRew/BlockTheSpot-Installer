@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial } from '../site/src/lib/catalog.mjs';
-import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical } from '../site/scripts/watch-official.mjs';
+import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical, archiveCandidates } from '../site/scripts/watch-official.mjs';
 const catalog = JSON.parse(await readFile(new URL('../site/data/catalog.json', import.meta.url), 'utf8'));
 const official = JSON.parse(await readFile(new URL('../site/data/official.json', import.meta.url), 'utf8'));
 const fixture = JSON.parse(await readFile(new URL('../testdata/loadspot_versions.json', import.meta.url), 'utf8'));
@@ -114,7 +114,7 @@ test('Snapshot refresh is idempotent: unchanged metadata does not cause another 
   const merged = mergeCatalogs(catalog.entries, catalog.entries);
   assert.deepEqual(merged, catalog.entries);
 });
-test('Official latest links and release link are explicit, with accessible page controls', () => {
+test('Official latest links and release link are explicit, with accessible page controls', async () => {
   const links = [...html.matchAll(/data-official-download href="([^"]+)"/g)];
   assert.equal(links.length, 3);
   for (const [, link] of links) assert.equal(new URL(link).hostname, 'download.scdn.co');
@@ -124,6 +124,8 @@ test('Official latest links and release link are explicit, with accessible page 
   assert.ok(html.includes('aria-live="polite"'));
   assert.ok(html.includes('Official Spotify only'));
   assert.ok(html.includes('Older official CDN links may have expired'));
+  const row = await readFile(new URL('../site/src/components/DownloadRow.astro', import.meta.url), 'utf8');
+  assert.ok(row.includes('orderedSources(entry)') && row.includes('alt-links'), 'rows offer the best source first and the other options beside it');
 });
 
 // --- release watcher -------------------------------------------------------------------------------
@@ -213,6 +215,18 @@ test('Update-service offers verify a captured build by hash, flag a conflict, an
   assert.equal(state.updateService.offers.Win32_x86_64.seenAt, '2026-09-19T05:00:00.000Z', 'a changed offer refreshes its seen date');
   assert.equal(state.updateService.offers.OSX_ARM64.seenAt, '2026-09-18T05:00:00.000Z', 'an offer that is no longer reported keeps its record');
   assert.equal(state.updateService.offers.Win32_ARM64.pollInterval, undefined, 'the jittered poll interval is not recorded');
+});
+
+test('Archive backfill prefers the live permanent URL, then the signed link, then the mirror', () => {
+  const build = { fullVersion: '1.3.1.234.g59d6bf59', platform: 'windows', architecture: 'x64', etag: '"e1"', sha256: 'a'.repeat(64), size: 10 };
+  const probe = { results: { Win32_x86_64: { os: 'windows', architecture: 'x64', fullVersion: '1.3.1.234.G59D6BF59', url: 'https://upgrade.scdn.co/x?fauth=t' } } };
+  const live = archiveCandidates(build, { 'windows-x64': { etag: '"e1"' } }, probe);
+  assert.equal(live.watched.id, 'windows-x64');
+  assert.deepEqual(live.candidates.map(c => c.url), [WATCHED[0].url, 'https://upgrade.scdn.co/x?fauth=t', 'https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.3.1.234.g59d6bf59-x64.exe']);
+  assert.equal(live.candidates[0].etag, '"e1"', 'the permanent URL is fetched with If-Match');
+  const rotated = archiveCandidates(build, { 'windows-x64': { etag: '"e2"' } }, null);
+  assert.deepEqual(rotated.candidates.map(c => new URL(c.url).host), ['loadspot.amd64fox1.workers.dev'], 'a rotated permanent URL and no probe leave only the mirror');
+  assert.deepEqual(archiveCandidates({ ...build, platform: 'macos' }, {}, null), { watched: null, candidates: [] });
 });
 
 test('A run that learned nothing new is byte-identical and not a change', () => {

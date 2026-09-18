@@ -1,4 +1,4 @@
-import { filterCatalog, selectSource, formatSize, platformNames } from './catalog.mjs';
+import { filterCatalog, orderedSources, sourceNote, formatSize, platformNames } from './catalog.mjs';
 
 const find = id => document.getElementById(id);
 const controls = { query: find('search'), architecture: find('architecture'), source: find('source'), sort: find('sort') };
@@ -16,11 +16,6 @@ function element(tag, text, className) {
   if (className) node.className = className;
   return node;
 }
-function sourceNote(source) {
-  if (source.kind === 'archive') return 'Copied from Spotify by CI · hash listed';
-  if (source.kind === 'mirror') return 'Community hosted';
-  return source.label === 'Spotify CDN' ? 'Archived link · may expire' : 'Direct download';
-}
 function row(entry) {
   const tr = element('tr');
   const version = element('td');
@@ -31,7 +26,7 @@ function row(entry) {
   platform.append(element('span', platformNames[entry.platform], 'platform-label'), element('small', `${entry.architecture} · ${entry.format.toUpperCase()}`));
   const date = element('td');
   date.append(element('span', entry.date ?? 'Not listed'), element('small', formatSize(entry.size)));
-  const source = selectSource(entry, state.source);
+  const [source, ...others] = orderedSources(entry, state.source);
   const sourceCell = element('td');
   sourceCell.append(element('span', source.label, `source-label ${source.kind}`), element('small', sourceNote(source)));
   const action = element('td', null, 'row-action');
@@ -40,6 +35,16 @@ function row(entry) {
   if (entry.sha256) download.title = `SHA-256 ${entry.sha256}`;
   download.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${source.label}`);
   action.append(download);
+  if (others.length) {
+    const alternatives = element('small', 'also: ', 'alt-links');
+    for (const other of others) {
+      const link = element('a', other.label);
+      link.href = other.url; link.title = sourceNote(other);
+      link.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${other.label}`);
+      alternatives.append(link);
+    }
+    action.append(alternatives);
+  }
   tr.append(version, platform, date, sourceCell, action);
   return tr;
 }

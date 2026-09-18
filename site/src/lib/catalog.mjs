@@ -118,9 +118,15 @@ export function mergeCatalogs(...catalogs) {
 // Permanent Spotify links and the apt repository never expire; the CI archive is a copy taken from
 // them; LoadSpot mirrors are maintained; old Spotify CDN links have expired and come last.
 const preference = ['Spotify (current build)', 'Spotify repository', 'GitHub archive', 'LoadSpot mirror', 'Spotify CDN'];
-export function selectSource(entry, kind = 'all') {
-  const sources = entry.sources.filter(source => kind === 'all' || source.kind === kind);
-  return sources.toSorted((a, b) => preference.indexOf(a.label) - preference.indexOf(b.label))[0];
+export function orderedSources(entry, kind = 'all') {
+  return entry.sources.filter(source => kind === 'all' || source.kind === kind)
+    .toSorted((a, b) => preference.indexOf(a.label) - preference.indexOf(b.label));
+}
+export function selectSource(entry, kind = 'all') { return orderedSources(entry, kind)[0]; }
+export function sourceNote(source) {
+  if (source.kind === 'archive') return 'Copied from Spotify by CI · hash listed';
+  if (source.kind === 'mirror') return 'Community hosted';
+  return source.label === 'Spotify CDN' ? 'Archived link · may have expired' : 'Direct download';
 }
 
 /**
