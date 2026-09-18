@@ -263,6 +263,13 @@ test('applyOfficial overlays hashes, the current permanent link and archive copi
   const added = fresh.find(e => e.id === '1.3.9.1.gabcdef12-windows-x64');
   assert.equal(added.date, '2026-03-13');
   assert.deepEqual(added.sources, [], 'a build with neither a current link nor an archive is listed by hash only');
+  assert.equal(windowsFeed(fresh)['1.3.9.1'], undefined, 'a hash-only build is left out of the installer feed instead of breaking it');
+  assert.equal(filterCatalog(fresh, { platform: 'windows', query: '1.3.9.1' }).length, 0, 'and out of the library table');
+  const offered = applyOfficial(entries, { watched: {}, builds: [{ ...build, fullVersion: '1.3.9.1.gabcdef12', archive: undefined, etag: '"x"',
+    updateService: { httpPrefix: 'https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.3.9.1.gabcdef12-77.exe', binaryHash: 'b'.repeat(40) } }] });
+  const withPrefix = offered.find(e => e.id === '1.3.9.1.gabcdef12-windows-x64');
+  assert.deepEqual(withPrefix.sources.map(s => s.label), ['Spotify CDN'], "the update service's http_prefix is kept as Spotify's versioned link");
+  assert.equal(windowsFeed(offered)['1.3.9.1'].win.x64.url, withPrefix.sources[0].url);
   assert.equal(applyOfficial(entries, null), entries);
   assert.equal(applyOfficial(entries, { builds: [{ fullVersion: 'bad', sha256: 'x' }] }).length, entries.length);
 });

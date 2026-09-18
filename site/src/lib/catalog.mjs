@@ -140,6 +140,10 @@ export function applyOfficial(entries, official) {
       sources.push({ url: build.url, kind: 'official', label: 'Spotify (current build)', etag: build.etag });
     const archive = build.archive && sourceFor(build.archive, build.fullVersion, build.platform, build.architecture);
     if (archive?.kind === 'archive') sources.push(archive);
+    // The update service's http_prefix is Spotify's versioned link; it expires, but it is kept like
+    // the historical CDN links so the exact official path of every build stays on record.
+    const prefix = build.updateService?.httpPrefix && sourceFor(build.updateService.httpPrefix, build.fullVersion, build.platform, build.architecture);
+    if (prefix?.label === 'Spotify CDN') sources.push(prefix);
     observed.push({
       id: `${build.fullVersion}-${build.platform}-${build.architecture}`,
       version: build.fullVersion.split('.').slice(0, 4).join('.'), fullVersion: build.fullVersion,
@@ -166,7 +170,8 @@ export function filterCatalog(entries, { query = '', platform = 'all', architect
 // its `etag` while that build is current, otherwise the historical upgrade.scdn.co link, which
 // Spotify has usually expired. `archive` is the CI copy and `sha256` the hash CI took from Spotify's file.
 export function windowsFeed(entries) {
-  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64').map(entry => {
+  // A build known only by its hash (no longer current, not mirrored, not archived) has nothing to offer the installer.
+  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64' && entry.sources.length > 0).map(entry => {
     const find = label => entry.sources.find(source => source.label === label);
     const current = find('Spotify (current build)');
     const official = current ?? find('Spotify CDN');
