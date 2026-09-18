@@ -58,7 +58,7 @@
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <TextBlock Text="Spotify version" Style="{StaticResource SectionTitle}" VerticalAlignment="Center"/>
                     <CheckBox Grid.Column="1" Content="{Binding AllVersionsLabel}" IsChecked="{Binding ShowAllVersions}" IsEnabled="{Binding CanEdit}" VerticalAlignment="Center"
-                              ToolTip="List every catalog build, newest first, and accept a typed version or installer link. Only the tested build is verified with BlockTheSpot."/>
+                              ToolTip="List every catalog build, newest first, and accept a typed version or installer link. Current (≥ 1.2.96) and Legacy (≤ 1.2.95) kits are both bundled."/>
                 </Grid>
                 <Grid>
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -76,6 +76,7 @@
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                                         <Border Style="{StaticResource Badge}"><TextBlock Text="{Binding Badge}" FontSize="11"/></Border>
+                                        <Border Style="{StaticResource Chip}"><TextBlock Text="{Binding Method}" FontSize="11"/></Border>
                                     </StackPanel>
                                     <TextBlock Grid.Column="1" Text="{Binding Detail}" Style="{StaticResource Hint}" Margin="12,0,4,0" VerticalAlignment="Center"
                                                HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
@@ -94,6 +95,7 @@
                 <TextBlock Text="Filter the list, or type a full version (1.2.80.699.gd5f6ebe3) or a Spotify / LoadSpot installer link to add it."
                            Style="{StaticResource Hint}" Margin="0,4,0,0" Visibility="{Binding ShowAllVersions, Converter={StaticResource BoolVisibility}}"/>
                 <TextBlock Text="{Binding CatalogHint}" Style="{StaticResource Hint}" Margin="0,8,0,0"/>
+                <TextBlock Text="{Binding PatchMethodLabel}" Style="{StaticResource Hint}" Margin="0,4,0,0" AutomationProperties.LiveSetting="Polite"/>
             </StackPanel>
         </Border>
 
@@ -106,7 +108,7 @@
                           ToolTip="Downloads and runs the selected Spotify setup first. Turn off to keep the version already installed; a missing Spotify is always installed."/>
                 <CheckBox Style="{StaticResource Option}" Grid.Column="1" Content="Open Spotify when finished" IsChecked="{Binding LaunchSpotify}"/>
                 <CheckBox Style="{StaticResource Option}" Grid.Row="1" Content="Apply BlockTheSpot patch" IsChecked="{Binding ApplyPatch}"
-                          ToolTip="Turn off to install only the selected Spotify version, any version, without changing its files. Previous patch files are removed."/>
+                          ToolTip="Applies the bundled BlockTheSpot kit for this Spotify version: legacy (kernel32 IAT) up to 1.2.95, current (api-ms IAT) from 1.2.96. Turn off to install only Spotify."/>
                 <CheckBox Style="{StaticResource Option}" Grid.Row="1" Grid.Column="1" Content="Replace Microsoft Store edition" IsChecked="{Binding RemoveStoreEdition}"
                           ToolTip="Removes the Store app from this Windows account and installs desktop Spotify. Your account and playlists stay with Spotify."/>
             </Grid>

@@ -21,7 +21,7 @@ public sealed class InstallerService(Downloads downloads, ISpotifyPlatform platf
 {
     private readonly PatchTransaction patch = transaction ?? new PatchTransaction();
     private readonly SemaphoreSlim gate = new(1, 1);
-    // Any version is accepted when only Spotify is installed; the patch has its own minimum.
+    // Any version is accepted when only Spotify is installed; the patch has its own floor per channel.
     private const string NoMinimum = "1.0.0.0";
 
     public async Task InstallAsync(InstallRequest request, IProgress<InstallProgress> progress, CancellationToken token)
@@ -38,28 +38,24 @@ public sealed class InstallerService(Downloads downloads, ISpotifyPlatform platf
             if (!needsSetup && !request.ApplyPatch)
                 throw new InvalidOperationException("Nothing to do: enable 'Install this Spotify version' or 'Apply BlockTheSpot patch'.");
             var minimum = NoMinimum;
-            string? config = null;
+            PatchKit? staged = null;
             if (request.ApplyPatch)
             {
-                progress.Report(new("Preparing", "Checking the supported Spotify version", 3));
-                config = await downloads.TextAsync(Sources.Config, token);
-                minimum = SpotifyVersions.MinimumFromConfig(config);
+                progress.Report(new("Preparing", "Selecting the BlockTheSpot kit for this Spotify version", 3));
                 if (needsSetup) Compatibility.ValidateChoice(request.Choice, request.AllowUntested);
                 else Compatibility.ValidateInstalled(installed.Version!, request.AllowUntested);
-                if (!needsSetup) SpotifyVersions.ValidateInstalled(installed.Version!, minimum, null);
-                if (needsSetup && request.Choice.FullVersion is { } selected && SpotifyVersions.Parse(selected) < SpotifyVersions.Parse(minimum))
-                    throw new InvalidOperationException($"This version is older than the supported minimum {minimum}. Choose a newer version, or turn off the patch to install only Spotify.");
+                // The kit follows the version that will be running when the patch is applied: the
+                // selected build when Spotify is (re)installed, the installed build when it is kept.
+                var plannedVersion = needsSetup ? request.Choice.FullVersion ?? Compatibility.TestedVersion : installed.Version!;
+                var planned = Compatibility.KitFor(plannedVersion)
+                    ?? throw new InvalidOperationException($"Spotify {plannedVersion} is older than the {Compatibility.LegacyKit.Label} minimum {Compatibility.LegacyKit.Floor}. Choose a newer version, or turn off the patch to install only Spotify.");
+                minimum = planned.Floor.ToString();
+                progress.Report(new("Preparing", $"Staging BlockTheSpot ({planned.Label})", 10));
+                await Task.Run(() => PatchFiles.Stage(staging, planned));
+                staged = planned;
             }
             if (await platform.IsStoreInstalledAsync(token) && !request.RemoveStoreEdition)
                 throw new InvalidOperationException("Microsoft Store Spotify is installed. Enable 'Replace Microsoft Store edition' to switch to the desktop app.");
-
-            if (request.ApplyPatch)
-            {
-                progress.Report(new("Downloading", "Preparing BlockTheSpot files before changing Spotify", 10));
-                await downloads.FileAsync(Sources.Chrome, Path.Combine(staging, "chrome_elf.dll"), 0, true, null, token);
-                await downloads.FileAsync(Sources.Block, Path.Combine(staging, "blockthespot.dll"), 0, true, null, token);
-                await File.WriteAllTextAsync(Path.Combine(staging, "config.ini"), config!, token);
-            }
 
             var setup = Path.Combine(staging, "SpotifySetup.exe");
             if (needsSetup)
@@ -79,7 +75,18 @@ public sealed class InstallerService(Downloads downloads, ISpotifyPlatform platf
                 await platform.RunSetupAsync(setup, minimum, request.Choice, CancellationToken.None);
             var actual = platform.Inspect().Version ?? throw new InvalidOperationException("Spotify setup did not produce a desktop installation.");
             SpotifyVersions.ValidateInstalled(actual, minimum, needsSetup ? request.Choice : null);
-            if (request.ApplyPatch) Compatibility.ValidateInstalled(actual, request.AllowUntested);
+            if (request.ApplyPatch)
+            {
+                Compatibility.ValidateInstalled(actual, request.AllowUntested);
+                // Setup may install a slightly different build than planned; re-stage if its kit differs.
+                var kit = Compatibility.KitFor(actual)
+                    ?? throw new InvalidOperationException($"Spotify {actual} is older than the earliest kit BlockTheSpot bundles.");
+                if (staged?.Id != kit.Id)
+                {
+                    progress.Report(new("Preparing", $"Spotify {actual} needs the {kit.Label}", 80, false));
+                    await Task.Run(() => PatchFiles.Stage(staging, kit));
+                }
+            }
             platform.ValidateInstalledArchitecture();
             await platform.StopSpotifyAsync(CancellationToken.None);
             if (request.ApplyPatch)
@@ -96,7 +103,10 @@ public sealed class InstallerService(Downloads downloads, ISpotifyPlatform platf
                 await Task.Run(() => patch.Discard(platform.SpotifyDirectory));
             }
             if (request.LaunchSpotify) platform.LaunchSpotify();
-            progress.Report(new("Completed", request.ApplyPatch ? $"Spotify {actual} is ready." : $"Spotify {actual} installed without the patch.", 100, false));
+            var done = request.ApplyPatch
+                ? $"Spotify {actual} is ready ({Compatibility.KitFor(actual)?.Label ?? "no kit"})."
+                : $"Spotify {actual} installed without the patch.";
+            progress.Report(new("Completed", done, 100, false));
         }
         finally
         {

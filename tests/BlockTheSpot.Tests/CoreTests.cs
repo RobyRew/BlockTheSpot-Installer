@@ -15,15 +15,15 @@ public sealed class CatalogTests
     [Fact]
     public void LiveSchemaListsEveryReleaseNewestFirstAndSelectsTheTestedVersion()
     {
-        var result = SpotifyVersions.Read(Fixture, "1.2.93.667");
-        Assert.Equal(5, result.Choices.Count);
-        Assert.Equal("1.3.1.223.g6311b0a4", result.Choices[1].FullVersion);
+        var result = SpotifyVersions.Read(Fixture, "1.3.1.234");
+        Assert.Equal(6, result.Choices.Count);
+        Assert.Equal("1.3.1.234.g59d6bf59", result.Choices[1].FullVersion);
         Assert.Equal("1.2.85.519.g549a528b", result.Choices[^1].FullVersion);
-        Assert.Equal("1.2.93.667.g7b5cc0ce", result.Selected.FullVersion);
+        Assert.Equal("1.3.1.234.g59d6bf59", result.Selected.FullVersion);
         Assert.True(result.Selected.Recommended);
-        Assert.Equal(146096232, result.Selected.Size);
-        Assert.Equal("01.07.2026", result.Selected.Date);
-        Assert.Equal("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe", result.Selected.Url.AbsoluteUri);
+        Assert.Equal(148153000, result.Selected.Size);
+        Assert.Equal("16.09.2026", result.Selected.Date);
+        Assert.Equal("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.3.1.234.g59d6bf59-x64.exe", result.Selected.Url.AbsoluteUri);
         Assert.Null(result.Selected.Mirror);
         Assert.Equal(SpotifyChoice.Latest, result.Choices[0]);
         Assert.Null(result.Warning);
@@ -33,7 +33,7 @@ public sealed class CatalogTests
     public void OlderVersionsStayListedWhenTheTestedVersionIsMissing()
     {
         var result = SpotifyVersions.Read(Fixture, "1.9.0.0");
-        Assert.Equal(5, result.Choices.Count);
+        Assert.Equal(6, result.Choices.Count);
         Assert.NotNull(result.Warning);
         Assert.Equal(SpotifyChoice.Latest, result.Selected);
         Assert.All(result.Choices.Skip(1), choice => Assert.False(choice.Recommended));
@@ -624,6 +624,52 @@ public sealed class InstallerTests
             new(SpotifyVersions.TryCustom("1.2.40.599.g606b7f29")!, true, false, false, AllowUntested: true), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
         Assert.Contains("turn off the patch", error.Message);
         Assert.Empty(platform.Events);
+    }
+
+    [Fact]
+    public async Task InstalledLegacySpotifyGetsTheLegacyKit()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path) { Version = "1.2.93.667" };
+        File.WriteAllText(Path.Combine(directory.Path, "chrome_elf.dll"), "original");
+        using var client = Client();
+        var stages = new List<string>();
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.LegacyChoice, false, false, false), new InlineProgress<InstallProgress>(p => stages.Add(p.Detail)), CancellationToken.None);
+        var dll = File.ReadAllBytes(Path.Combine(directory.Path, "blockthespot.dll"));
+        Assert.Equal(0x75, dll[6372]);
+        Assert.Contains("1.2.93.667", File.ReadAllText(Path.Combine(directory.Path, "config.ini")));
+        Assert.DoesNotContain("setup", platform.Events);
+        Assert.Contains(stages, d => d.Contains("legacy kit"));
+    }
+
+    [Fact]
+    public async Task InstalledCurrentSpotifyGetsTheCurrentKit()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path) { Version = "1.3.1.234.g59d6bf59" };
+        File.WriteAllText(Path.Combine(directory.Path, "chrome_elf.dll"), "original");
+        using var client = Client();
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.TestedChoice, false, false, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None);
+        var dll = File.ReadAllBytes(Path.Combine(directory.Path, "blockthespot.dll"));
+        Assert.Equal(0x90, dll[6372]);
+        Assert.Contains("1.3.1.234", File.ReadAllText(Path.Combine(directory.Path, "config.ini")));
+        Assert.DoesNotContain("setup", platform.Events);
+    }
+
+    [Fact]
+    public async Task ReinstallingAnOlderVersionStagesThatVersionsKit()
+    {
+        using var directory = new TemporaryDirectory();
+        // Spotify 1.3.x is installed, but the legacy build is reinstalled: the patch must follow the file that ends up on disk.
+        var platform = new FakePlatform(directory.Path) { Version = "1.3.1.234.g59d6bf59" };
+        using var client = Client();
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.LegacyChoice with { Sha256 = null, Size = 0 }, true, false, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None);
+        Assert.Contains("setup", platform.Events);
+        Assert.Equal("1.2.93.667.g7b5cc0ce", platform.Version);
+        Assert.Equal(0x75, File.ReadAllBytes(Path.Combine(directory.Path, "blockthespot.dll"))[6372]);
     }
 
     private static HttpClient Client(bool failPatch = false) => new(new FakeHandler(uri =>

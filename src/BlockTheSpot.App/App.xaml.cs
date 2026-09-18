@@ -36,11 +36,11 @@ public partial class App : Application
             if (!smokeTest) return;
             foreach (var key in new[] { "CardBackgroundFillColorDefaultBrush", "TextFillColorPrimaryBrush", "AccentFillColorDefaultBrush" })
                 if (window.TryFindResource(key) is null) throw new InvalidOperationException("Missing Fluent resource: " + key);
-            if (window.VersionPicker.Items.Count != 1 || !window.Model.InstallCommand.CanExecute(null))
+            if (window.VersionPicker.Items.Count != 2 || !window.Model.InstallCommand.CanExecute(null))
                 throw new InvalidOperationException("Initial UI bindings did not initialize.");
             // Drive the version picker the way a user would: list everything, filter, type a version, switch modes.
             window.Model.ShowAllVersions = true;
-            if (window.VersionPicker.Items.Count != 2 || window.FilterBox.Visibility != Visibility.Visible)
+            if (window.VersionPicker.Items.Count != 3 || window.FilterBox.Visibility != Visibility.Visible)
                 throw new InvalidOperationException("All versions did not populate the picker.");
             window.FilterBox.Text = "1.2.80.699.gd5f6ebe3";
             if (window.VersionPicker.Items.Count != 2 || window.Model.SelectedChoice?.Custom != true || window.Model.SelectedChoice.FullVersion != "1.2.80.699.gd5f6ebe3")
@@ -51,7 +51,7 @@ public partial class App : Application
                 throw new InvalidOperationException("Spotify-only mode did not update the primary action.");
             window.Model.ApplyPatch = true;
             window.Model.ShowAllVersions = false;
-            if (window.VersionPicker.Items.Count != 1 || window.Model.SelectedChoice?.Recommended != true)
+            if (window.VersionPicker.Items.Count != 2 || window.Model.SelectedChoice?.Recommended != true)
                 throw new InvalidOperationException("Returning to the tested build did not reset the picker.");
             // RenderTargetBitmap cannot capture the compositor's Mica backdrop.
             // Use Fluent's opaque fallback only for test screenshots.

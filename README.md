@@ -7,7 +7,7 @@ A native Windows app for installing and restoring [BlockTheSpot](https://github.
 ## Install
 
 1. Download `BlockTheSpotInstaller.exe` and open it normally, **without running as administrator**.
-2. The default is **Spotify 1.2.93.667.g7b5cc0ce**, the latest tested compatible version for this release. Tick **All versions** to pick any other build from the catalog, or type a full version or installer link.
+2. The default is **Spotify 1.3.1.234.g59d6bf59** (current kit). **1.2.93.667.g7b5cc0ce** (legacy kit) is one click below it, and **All versions** lets you pick any other build or type a full version or installer link. The BlockTheSpot kit is chosen automatically from the Spotify version (legacy ≤ 1.2.95, current ≥ 1.2.96).
 3. Leave **Install this Spotify version** on to install that version. Turn it off only to keep an already compatible installation.
 4. Select **Install BlockTheSpot**. The app downloads and validates all required files before changing Spotify.
 5. Use **Restore original Spotify** to undo the patch.
@@ -27,6 +27,7 @@ Support the artists you listen to. Please consider [Spotify Premium](https://www
 - The live [LoadSpot catalog](https://loadspot.pages.dev/versions) comes from [`LoaderSpot/table`](https://github.com/LoaderSpot/table/blob/main/table/versions.json). Its predecessor [`LoaderSpot/LoaderSpot`](https://github.com/LoaderSpot/LoaderSpot) is archived. The maintained catalog includes architecture-specific download URLs, dates, and sizes.
 - **Refresh** (Ctrl+R) loads the compact GitHub Pages feed first (four-second deadline), then the maintained upstream catalog (eight-second deadline), while preserving a valid selection. The Pages feed carries both Spotify's link and the mirror per build; the upstream table carries one. The known tested link remains available if both fail. Startup does not wait for the patch server; its current configuration is validated when installation starts.
 - **Replace Microsoft Store edition** is opt-in and affects only the current Windows account.
+- **Bundled patch kits.** BlockTheSpot's `chrome_elf.dll`, `blockthespot.dll` and `config.ini` are embedded in the installer, not fetched at install time. `Compatibility.Kits` is an ordered table (floor → kit); `KitFor(version)` returns the highest-floor kit at or below a version, and the last row is the current kit. Today: **legacy** (`Patch/legacy`, floor 1.2.70, upstream Nuzair46 files) and **current** (`Patch/current`, floor 1.2.96, `blockthespot.dll` with two IAT jumps NOP'd and a `config.ini` rebuilt for 1.3.1.234). The legacy kit is the one verified end to end; the current kit adapts it to modern Spotify and is selected automatically for 1.2.96+. To add a kit, drop `Patch/<id>/{blockthespot.dll,config.ini}`, embed them in `BlockTheSpot.Core.csproj`, and add one `Kits` row.
 - Downloads can be cancelled. Once Spotify setup or file replacement begins, the operation finishes before the app can be closed.
 - The activity log can be saved locally. No analytics or telemetry are added by the application.
 
@@ -67,7 +68,7 @@ dotnet publish src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release -r win-x6
 
 Architecture:
 
-- `BlockTheSpot.Core`: catalog parsing with Spotify-first/mirror-fallback sources, typed version and link parsing, compatibility policy, streaming downloads, install orchestration (with or without the patch), and transactional patch/restore/discard. Windows operations use an injected interface, making failure paths testable.
+- `BlockTheSpot.Core`: bundled patch kits selected per Spotify version (`Compatibility.Kits`/`PatchFiles`), catalog parsing with Spotify-first/mirror-fallback sources, typed version and link parsing, compatibility policy, streaming downloads, install orchestration (with or without the patch), and transactional patch/restore/discard. Windows operations use an injected interface, making failure paths testable.
 - `BlockTheSpot.App`: native WPF Fluent UI, view model, and Windows process/signature/installation adapter.
 - `tests`: regressions for catalog formats, pinned defaults, source fallback, custom input, Spotify-only installs, HTTP failures, partial downloads, cancellation, architecture checks, install ordering, backup refresh, and rollback.
 - `site`: Astro 7 static version library, source validation and normalization, scheduled catalog updater, responsive search/filter UI, and versioned JSON endpoints. Node 24 is used in CI; dependencies are locked.

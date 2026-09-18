@@ -36,7 +36,10 @@ public sealed record SpotifyChoice(string? FullVersion, Uri Url, string? Date = 
     public static SpotifyChoice Latest { get; } = new(null, Sources.LatestSpotify);
     public bool IsLatest => FullVersion is null;
     public string Title => FullVersion ?? "Latest official Spotify";
-    public string Badge => Recommended ? "Tested" : IsLatest ? "Official" : Custom ? "Custom" : "Untested";
+    public string Badge => Recommended ? "Current" : IsLegacyPin ? "Legacy" : IsLatest ? "Official" : Custom ? "Custom" : "Untested";
+    public bool IsLegacyPin => string.Equals(FullVersion, Compatibility.LegacyVersion, StringComparison.OrdinalIgnoreCase);
+    // Which bundled kit this build patches with; the newest kit always reads "Current".
+    public string Method => Compatibility.MethodOf(FullVersion);
     public string Source => SourceOf(Url);
     public string Detail => string.Join(" · ", new[] { IsLatest ? "Current release" : Date, Size > 0 ? $"{Size / 1048576d:F0} MiB" : null, Source,
         Sha256 is null ? null : "SHA-256" }.Where(s => !string.IsNullOrWhiteSpace(s)));

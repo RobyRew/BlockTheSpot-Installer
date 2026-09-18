@@ -43,15 +43,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsBusy => busy;
     public bool IsLoading => loading;
     public bool CanCancel => busy && canCancel;
-    public bool ReinstallSpotify { get => reinstall; set { Set(ref reinstall, value); Notify(nameof(PrimaryAction)); } }
+    public bool ReinstallSpotify { get => reinstall; set { Set(ref reinstall, value); Notify(nameof(PrimaryAction)); Notify(nameof(PatchMethodLabel)); } }
     public bool LaunchSpotify { get => launch; set => Set(ref launch, value); }
     public bool RemoveStoreEdition { get => removeStore; set => Set(ref removeStore, value); }
     public bool ShowLog { get => showLog; set => Set(ref showLog, value); }
-    /// <summary>Lists every catalog build and accepts typed versions. Off, only the tested build is offered.</summary>
+    /// <summary>Lists every catalog build and accepts typed versions. Off, the current and legacy pins are offered.</summary>
     public bool ShowAllVersions { get => showAll; set { Set(ref showAll, value); PopulateChoices(); } }
-    public bool ApplyPatch { get => applyPatch; set { Set(ref applyPatch, value); Notify(nameof(PrimaryAction)); } }
+    public bool ApplyPatch { get => applyPatch; set { Set(ref applyPatch, value); Notify(nameof(PrimaryAction)); Notify(nameof(PatchMethodLabel)); } }
     public string Filter { get => filter; set { Set(ref filter, value); PopulateChoices(); } }
-    public SpotifyChoice? SelectedChoice { get => selected; set => Set(ref selected, value); }
+    public SpotifyChoice? SelectedChoice { get => selected; set { Set(ref selected, value); Notify(nameof(PatchMethodLabel)); } }
     public string Status { get => status; private set => Set(ref status, value); }
     public string StatusDetail { get => detail; private set => Set(ref detail, value); }
     public string InstalledLabel { get => installedLabel; private set => Set(ref installedLabel, value); }
@@ -59,6 +59,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public string VersionLabel { get => versionLabel; private set => Set(ref versionLabel, value); }
     public string AllVersionsLabel => catalogChoices.Count > 1 ? $"All versions ({catalogChoices.Count - 1})" : "All versions";
     public string PrimaryAction => ApplyPatch ? "Install BlockTheSpot" : ReinstallSpotify ? "Install Spotify only" : "Nothing to install";
+    // Names the bundled kit that will actually be applied, given the version that will be running.
+    public string PatchMethodLabel
+    {
+        get
+        {
+            if (!ApplyPatch || SelectedChoice is null) return "The patch is off. Only Spotify will be installed.";
+            var version = ReinstallSpotify ? SelectedChoice.FullVersion : platform.Inspect().Version ?? SelectedChoice.FullVersion;
+            if (version is null)
+                return $"Patch: {Compatibility.CurrentKit.Label} after setup.";
+            var kit = Compatibility.KitFor(version);
+            return kit is null
+                ? $"Spotify {version} is below the earliest kit ({Compatibility.LegacyKit.Floor})."
+                : $"Patch: {kit.Label}{(kit == Compatibility.CurrentKit ? " (current)" : "")} for Spotify {version}.";
+        }
+    }
     public double ProgressValue { get => progressValue; private set { Set(ref progressValue, value); Notify(nameof(ProgressLabel)); } }
     public string ProgressLabel => busy ? $"{ProgressValue:0}%" : "";
     public string LogText => string.Join(Environment.NewLine, log);
@@ -76,12 +91,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         SaveLogCommand = new(SaveLog);
         if (preview)
         {
-            catalogChoices = [Compatibility.TestedChoice, SpotifyChoice.Latest];
+            catalogChoices = [Compatibility.TestedChoice, Compatibility.LegacyChoice, SpotifyChoice.Latest];
             PopulateChoices();
-            InstalledLabel = "Spotify 1.2.93.667 · desktop edition · not patched";
+            InstalledLabel = "Spotify 1.3.1.234 · desktop edition · not patched";
             CatalogHint = SourceNote;
             Status = "Ready when you are";
-            StatusDetail = "Spotify 1.2.93.667 will be installed before patching.";
+            StatusDetail = "Spotify 1.3.1.234 will be installed before patching.";
         }
     }
 
@@ -159,6 +174,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var tested = catalogChoices.FirstOrDefault(c => string.Equals(c.FullVersion, Compatibility.TestedVersion, StringComparison.OrdinalIgnoreCase)) ?? Compatibility.TestedChoice;
         var list = new List<SpotifyChoice> { tested with { Recommended = true } };
         SpotifyChoice? typed = null;
+        // The legacy pin is a second fixed entry; in the full list it already appears from the catalog.
+        if (!ShowAllVersions && !list.Any(c => c.IsLegacyPin))
+            list.Add(Compatibility.LegacyChoice with { Recommended = false });
         if (ShowAllVersions)
         {
             var search = Filter.Trim();
@@ -173,6 +191,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         SelectedChoice = (typed is null ? null : Choices.FirstOrDefault(c => Offers(c, typed.Url)))
             ?? Choices.FirstOrDefault(c => c.Url == previous?.Url) ?? Choices[0];
         Notify(nameof(AllVersionsLabel));
+        Notify(nameof(PatchMethodLabel));
     }
 
     private static bool Matches(SpotifyChoice choice, string search) =>
