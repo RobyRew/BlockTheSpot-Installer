@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial } from '../site/src/lib/catalog.mjs';
-import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease } from '../site/scripts/watch-official.mjs';
+import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical } from '../site/scripts/watch-official.mjs';
 const catalog = JSON.parse(await readFile(new URL('../site/data/catalog.json', import.meta.url), 'utf8'));
 const official = JSON.parse(await readFile(new URL('../site/data/official.json', import.meta.url), 'utf8'));
 const fixture = JSON.parse(await readFile(new URL('../testdata/loadspot_versions.json', import.meta.url), 'utf8'));
@@ -212,6 +212,18 @@ test('Update-service offers verify a captured build by hash, flag a conflict, an
   assert.equal(unseen[0].fullVersion, '1.3.2.100.g11111111');
   assert.equal(state.updateService.offers.Win32_x86_64.seenAt, '2026-09-19T05:00:00.000Z', 'a changed offer refreshes its seen date');
   assert.equal(state.updateService.offers.OSX_ARM64.seenAt, '2026-09-18T05:00:00.000Z', 'an offer that is no longer reported keeps its record');
+  assert.equal(state.updateService.offers.Win32_ARM64.pollInterval, undefined, 'the jittered poll interval is not recorded');
+});
+
+test('A run that learned nothing new is byte-identical and not a change', () => {
+  const state = { schemaVersion: 1, watched: { 'windows-x64': { etag: '"e"', size: 1, lastModified: 'x', checkedAt: 't1', changedAt: 't0' } },
+    updateService: { claim: '1.2.0.0', checkedAt: 't1', offers: { Win32_x86_64: { fullVersion: 'v', seenAt: 't0' } } }, builds: [{ fullVersion: 'v', sha256: 'a', sensors: ['permanent-url'] }] };
+  const reordered = { builds: state.builds, updateService: { offers: state.updateService.offers, checkedAt: 't2', claim: '1.2.0.0' }, watched: { 'windows-x64': { ...state.watched['windows-x64'], checkedAt: 't2' } }, schemaVersion: 1 };
+  assert.equal(canonical(state), canonical(reordered), 'key order and check times do not count as changes');
+  assert.ok(serialize(reordered).startsWith('{\n  "schemaVersion": 1,\n  "watched": {'), 'top-level sections are written in a fixed order');
+  assert.ok(serialize(reordered).indexOf('"updateService"') < serialize(reordered).indexOf('"builds"'));
+  assert.notEqual(canonical(state), canonical({ ...state, builds: [{ ...state.builds[0], verified: 'binary_hash' }] }), 'a new observation is a change');
+  assert.equal(serialize(JSON.parse(serialize(official))), serialize(official), 'the published file round-trips');
 });
 
 test('The probe is skipped without credentials and its output is parsed when present', () => {

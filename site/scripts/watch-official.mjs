@@ -129,6 +129,20 @@ export function applyObservations(previous, heads, captures, checkedAt) {
   return { schemaVersion: 1, watched, ...(previous?.updateService ? { updateService: previous.updateService } : {}), builds };
 }
 
+/** Fixed key order for the file, so a run that learned nothing new writes byte-identical JSON. */
+export function serialize(state) {
+  const ordered = { schemaVersion: state.schemaVersion, watched: state.watched, ...(state.updateService ? { updateService: state.updateService } : {}), builds: state.builds };
+  return JSON.stringify(ordered, null, 2) + '\n';
+}
+
+/** Change detection ignores when a check ran and any key order; only observations count. */
+export function canonical(state) {
+  const strip = value => Array.isArray(value) ? value.map(strip)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().filter(key => key !== 'checkedAt').map(key => [key, strip(value[key])]))
+    : value;
+  return JSON.stringify(strip(state));
+}
+
 /**
  * Pure part of the second sensor. For each Windows offer, the matching build (same version and
  * architecture) gets Spotify's http_prefix and binary_hash; the record is verified when that hash
@@ -142,9 +156,9 @@ export function reconcileUpdateService(state, probe, checkedAt) {
     if (!result?.fullVersion || !result.httpPrefix) continue;
     const before = offers[platform];
     const changed = before?.fullVersion !== result.fullVersion || before?.httpPrefix !== result.httpPrefix || before?.binaryHash !== result.binaryHash;
+    // poll_interval is jittered per response and left out, so an unchanged offer stays byte-identical.
     offers[platform] = { fullVersion: result.fullVersion, os: result.os, architecture: result.architecture, httpPrefix: result.httpPrefix,
-      binaryHash: result.binaryHash, targetVersion: result.targetVersion, upgradeType: result.upgradeType, pollInterval: result.pollInterval,
-      seenAt: changed ? checkedAt : before.seenAt };
+      binaryHash: result.binaryHash, targetVersion: result.targetVersion, upgradeType: result.upgradeType, seenAt: changed ? checkedAt : before.seenAt };
     if (result.os !== 'windows') continue;
     const build = state.builds.find(b => b.platform === 'windows' && b.architecture === result.architecture && b.fullVersion.toLowerCase() === result.fullVersion.toLowerCase());
     if (!build) { missing.push(result); continue; }
@@ -223,10 +237,8 @@ async function main() {
       reconcileUpdateService(merged, probe, checkedAt);
       Object.assign(next, merged);
     }
-    const comparable = state => JSON.stringify({ ...state, watched: Object.fromEntries(Object.entries(state.watched).map(([id, w]) => [id, { ...w, checkedAt: null }])),
-      updateService: state.updateService ? { ...state.updateService, checkedAt: null } : undefined });
-    const differs = !previous || comparable(previous) !== comparable(next);
-    if (differs) await writeFile(target, JSON.stringify(next, null, 2) + '\n');
+    const differs = !previous || canonical(previous) !== canonical(next);
+    if (differs) await writeFile(target, serialize(next));
     if (process.env.GITHUB_OUTPUT) await writeFile(process.env.GITHUB_OUTPUT, `changed=${differs}\n`, { flag: 'a' });
     const conflicts = next.builds.filter(b => b.conflict);
     console.log(differs ? `official.json updated: ${captures.length} new build(s), ${next.builds.length} recorded.` : 'No new Spotify build.');
