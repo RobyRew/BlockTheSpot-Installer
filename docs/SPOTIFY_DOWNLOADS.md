@@ -88,11 +88,25 @@ Consequences observed:
    Spotify's own `binary_hash`. Without the secret the step is skipped and sensor 1 works alone.
 3. **Reconciliation.** Records are keyed by SHA-256, so a build seen by both sensors is one record
    with `sensors: ["permanent-url", "update-service"]`. A build gets `verified: "binary_hash"` when
-   Spotify's hash equals the SHA-256 or SHA-1 of the downloaded file (the algorithm behind
-   `binary_hash` is not documented; both are kept), and `conflict` when it matches neither — a
-   conflict is printed in the run and never marks the build verified. A build the service offers but
-   the permanent URL has not shown yet is downloaded from the signed link while it is valid and
-   recorded with `sensors: ["update-service"]`.
+   Spotify's hash equals the SHA-256 or SHA-1 of the downloaded file, and `conflict` when it matches
+   neither — a conflict is printed in the run and never marks the build verified. A build the service
+   offers but the permanent URL has not shown yet is downloaded from the signed link while it is
+   valid and recorded with `sensors: ["update-service"]`.
+
+Live run on 2026-09-18 with a stored session (claiming version 1.2.0.0), which settled the unknowns:
+
+- The service accepted the librespot session (keymaster token for the desktop client id plus a
+  client-token) and answered `200` with protobuf for all four platforms.
+- `binary_hash` is the **SHA-1** of the installer: `fdfc152db2f4249c72d944d75310c310b8d84974` for
+  1.3.1.234 x64 and `218b9985e87aeea4b9112ef37d6c9df661c650be` for ARM64, both equal to the SHA-1 the
+  permanent-URL sensor had computed the day before from `download.scdn.co`. Both builds are recorded
+  as `verified`.
+- `http_prefix` was `…/spotify_installer-1.3.1.234.g59d6bf59-5377.exe`; the `-5377` build number is
+  shared across platforms. `http_suffix` is `?fauth=<JWT>` signed by `scdn-url-signer` with
+  `nbf`/`exp` 30 days apart and the path bound in the claim, so a signed link is usable for a month.
+- `OSX` (Intel) answered "up to date" for the 1.2.0.0 claim while `OSX_ARM64` was offered 1.3.1.234;
+  Spotify no longer pushes Intel macOS upgrades to old versions through this channel.
+- `poll_interval` varied between 11258 s and 14669 s across platforms (about 3–4 h, jittered).
 
 What the catalog and the app get from this: `sha256` per observed build, the permanent URL with
 its ETag while the build is current, the archive copy when one exists, and Spotify's `http_prefix`.

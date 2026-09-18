@@ -174,16 +174,45 @@ def self_test() -> None:
 
 # --- live probe -----------------------------------------------------------------------------------------
 
+def prefer_accesspoints(ports: tuple[str, ...]) -> None:
+    """librespot picks an access point at random, including ones on port 80, which some networks refuse."""
+    from librespot.core import ApResolver
+
+    original = getattr(ApResolver, "_original_get_random_of", ApResolver.get_random_of)
+    ApResolver._original_get_random_of = original
+
+    def preferred(service_type: str) -> str:
+        if service_type != "accesspoint":
+            return original(service_type)
+        urls = ApResolver.request(service_type).get(service_type, [])
+        chosen = next((url for port in ports for url in urls if url.endswith(port)), None) or original(service_type)
+        print(f"access point: {chosen}", file=sys.stderr, flush=True)
+        return chosen
+
+    ApResolver.get_random_of = staticmethod(preferred)
+
+
 def open_session(credentials_path: str | None, login: bool):
     from librespot.core import Session  # imported lazily: the dependency is only needed for live use
 
-    builder = Session.Builder()
-    if login:
-        builder.conf.stored_credentials_file = credentials_path
-        builder.conf.store_credentials = True
-        return builder.oauth(None).create()
-    builder.conf.store_credentials = False
-    return builder.stored_file(credentials_path).create()
+    # One refused connection was observed on an otherwise working network; the second attempt swaps the port order.
+    for attempt, ports in enumerate(((":4070", ":443"), (":443", ":4070"))):
+        prefer_accesspoints(ports)
+        builder = Session.Builder()
+        try:
+            if login:
+                builder.conf.stored_credentials_file = credentials_path
+                builder.conf.store_credentials = True
+                # The callback lands on 127.0.0.1:5588, so the link must be opened on the machine running this script.
+                show = lambda url: print(f"\nOpen this link in a browser on this machine and log in with the account to store:\n{url}\n", file=sys.stderr, flush=True)
+                return builder.oauth(show).create()
+            builder.conf.store_credentials = False
+            return builder.stored_file(credentials_path).create()
+        except ConnectionError as error:
+            if attempt or login:
+                raise
+            print(f"access point connection failed ({error}); retrying on the other port", file=sys.stderr, flush=True)
+            time.sleep(3)
 
 
 def probe(session, platform: str, claim: str) -> dict:
