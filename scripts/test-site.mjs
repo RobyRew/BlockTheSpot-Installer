@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial, isExpired, sourceNote } from '../site/src/lib/catalog.mjs';
-import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical, archiveCandidates } from '../site/scripts/watch-official.mjs';
+import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease, serialize, canonical, archiveCandidates, archiveAlive } from '../site/scripts/watch-official.mjs';
 const catalog = JSON.parse(await readFile(new URL('../site/data/catalog.json', import.meta.url), 'utf8'));
 const official = JSON.parse(await readFile(new URL('../site/data/official.json', import.meta.url), 'utf8'));
 const fixture = JSON.parse(await readFile(new URL('../testdata/loadspot_versions.json', import.meta.url), 'utf8'));
@@ -168,6 +168,7 @@ test('Watcher downloads with If-Match, hashes the file and refuses a build that 
     assert.equal(file.sha1, sha('sha1', image));
     assert.equal(file.fullVersion, '1.3.1.234.g59d6bf59');
     assert.equal(file.name, 'spotify_installer-1.3.1.234.g59d6bf59-x64.exe');
+    assert.equal(file.path, join(directory, file.name), 'the file carries the asset name a release upload will keep');
     assert.equal(file.lastModified, '2026-09-17T15:26:53.000Z');
     await assert.rejects(capture(target, { url: 'https://upgrade.scdn.co/x', expectVersion: '1.3.1.235.g00000000' }, directory, fetchImpl), /is 1\.3\.1\.234\.g59d6bf59, not/);
     await assert.rejects(capture(target, { etag: '"abc"', size: 10 }, directory, fetchImpl), /received .* of 10 bytes/);
@@ -256,6 +257,12 @@ test('A signed Spotify link is the official download while valid and a visible r
   assert.equal(windowsFeed(after)['1.2.85.519'].win.x64.official, signed.split('?')[0], 'the installer still tries the official path first');
 });
 
+test('A recorded archive link is kept only while it answers', async () => {
+  assert.equal(await archiveAlive('https://example.test/a', async () => new Response(null, { status: 200 })), true);
+  assert.equal(await archiveAlive('https://example.test/a', async () => new Response('<html>Not Found</html>', { status: 404 })), false);
+  assert.equal(await archiveAlive('https://example.test/a', async () => { throw new Error('offline'); }), false);
+});
+
 test('A run that learned nothing new is byte-identical and not a change', () => {
   const state = { schemaVersion: 1, watched: { 'windows-x64': { etag: '"e"', size: 1, lastModified: 'x', checkedAt: 't1', changedAt: 't0' } },
     updateService: { claim: '1.2.0.0', checkedAt: 't1', offers: { Win32_x86_64: { fullVersion: 'v', seenAt: 't0' } } }, builds: [{ fullVersion: 'v', sha256: 'a', sensors: ['permanent-url'] }] };
@@ -281,15 +288,16 @@ test('The probe is skipped without credentials and its output is parsed when pre
 });
 
 test('Archiving is off without a tag and uploads under the stable asset name with it', () => {
-  const file = { path: '/tmp/x.exe', name: 'spotify_installer-1.3.1.234.g59d6bf59-x64.exe' };
+  const file = { path: '/tmp/spotify_installer-1.3.1.234.g59d6bf59-x64.exe', name: 'spotify_installer-1.3.1.234.g59d6bf59-x64.exe' };
   assert.equal(archive(file, '', 'RobyRew/BlockTheSpot-Installer'), null);
+  assert.throws(() => archive({ path: '/tmp/windows-x64.exe', name: file.name }, 'spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run: () => ({ status: 0 }) }), /must be named/);
   const calls = [];
   const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: args[1] === 'view' ? 1 : 0 }; };
   ensureRelease('spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run });
   const url = archive(file, 'spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run });
   assert.equal(url, 'https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe');
   assert.deepEqual(calls.map(c => c.slice(0, 3)), [['gh', 'release', 'view'], ['gh', 'release', 'create'], ['gh', 'release', 'upload']]);
-  assert.ok(calls[2].includes('/tmp/x.exe#spotify_installer-1.3.1.234.g59d6bf59-x64.exe'));
+  assert.ok(calls[2].includes('/tmp/spotify_installer-1.3.1.234.g59d6bf59-x64.exe') && !calls[2].some(arg => arg.includes('#')), 'uploaded by file name, never with a display label');
   assert.equal(sourceFor(url, '1.3.1.234.g59d6bf59', 'windows', 'x64').kind, 'archive');
   assert.throws(() => archive(file, 'spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run: () => ({ status: 2 }) }), /exited with 2/);
 });

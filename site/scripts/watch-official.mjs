@@ -11,9 +11,9 @@
 // attached to that GitHub release under the stable spotify_installer-<version>-<arch>.exe name.
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile, open } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, writeFile, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { spawnSync } from 'node:child_process';
@@ -91,14 +91,18 @@ export async function capture(target, { url = target.url, etag = null, size = nu
   const { machine, productVersion } = inspectPortableExecutable(image);
   if (machine !== target.machine) throw new Error(`${url}: machine 0x${machine.toString(16)} is not ${target.architecture}`);
   if (expectVersion && expectVersion.toLowerCase() !== productVersion.toLowerCase()) throw new Error(`${url}: file is ${productVersion}, not ${expectVersion}`);
-  return { path, sha256: sha256.digest('hex'), sha1: sha1.digest('hex'), size: bytes, lastModified: head.lastModified, etag: head.etag,
-    fullVersion: productVersion, name: `spotify_installer-${productVersion}-${target.architecture}.exe` };
+  // A release asset takes the local file's name, so the file is named after the build before any upload.
+  const name = `spotify_installer-${productVersion}-${target.architecture}.exe`;
+  const named = join(directory, name);
+  await rename(path, named);
+  return { path: named, sha256: sha256.digest('hex'), sha1: sha1.digest('hex'), size: bytes, lastModified: head.lastModified, etag: head.etag, fullVersion: productVersion, name };
 }
 
 /** Attaches a captured file to the rolling release. Returns the asset URL, or null when archiving is off. */
 export function archive(file, tag, repository, { run = spawnSync } = {}) {
   if (!tag) return null;
-  const result = run('gh', ['release', 'upload', tag, `${file.path}#${file.name}`, '--repo', repository, '--clobber'], { stdio: 'inherit' });
+  if (basename(file.path) !== file.name) throw new Error(`archive: ${file.path} must be named ${file.name}`);
+  const result = run('gh', ['release', 'upload', tag, file.path, '--repo', repository, '--clobber'], { stdio: 'inherit' });
   if (result.status !== 0) throw new Error(`gh release upload exited with ${result.status}`);
   return `https://github.com/${repository}/releases/download/${tag}/${file.name}`;
 }
@@ -200,6 +204,15 @@ function signedLink(previous, result, checkedAt) {
   return result.url && result.signedUntil ? { signedUrl: result.url, signedUntil: result.signedUntil } : {};
 }
 
+/** A recorded archive link must still answer; a dead one is dropped so the backfill replaces it. */
+export async function archiveAlive(url, fetchImpl = fetch) {
+  try {
+    const response = await fetchImpl(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(20_000) });
+    await response.body?.cancel();
+    return response.status === 200;
+  } catch { return false; }
+}
+
 /** Runs the Python probe when credentials are configured; null when skipped or unusable. */
 export function runProbe({ run = spawnSync, env = process.env } = {}) {
   if (!env.SPOTIFY_CREDENTIALS && !env.SPOTIFY_CREDENTIALS_FILE) return null;
@@ -263,6 +276,11 @@ async function main() {
       merged.updateService = next.updateService;
       reconcileUpdateService(merged, probe, checkedAt);
       Object.assign(next, merged);
+    }
+    for (const build of next.builds.filter(b => b.archive)) {
+      if (await archiveAlive(build.archive)) continue;
+      console.warn(`${build.fullVersion} ${build.architecture}: archive copy ${build.archive} does not answer; dropping it`);
+      delete build.archive; delete build.archivedFrom;
     }
     // Archiving may be switched on after builds were recorded: backfill what is still obtainable.
     if (tag) {
