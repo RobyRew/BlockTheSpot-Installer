@@ -1,4 +1,7 @@
 using System.Net;
+using System.Net.Security;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using BlockTheSpot.Core;
 using Xunit;
@@ -219,6 +222,72 @@ public sealed class CatalogTests
         token.Cancel();
         using var client = new HttpClient(new FakeHandler(_ => throw new OperationCanceledException(token.Token)));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new CatalogService(new Downloads(client)).LoadAsync(token.Token));
+    }
+}
+
+public sealed class TrustTests
+{
+    private static X509Certificate2Collection Chain()
+    {
+        var chain = new X509Certificate2Collection();
+        chain.ImportFromPemFile(Path.Combine(AppContext.BaseDirectory, "github_com_chain_2026-09-18.pem"));
+        return chain;
+    }
+
+    [Fact]
+    public void BundledRootsAreSelfSignedAuthoritiesCoveringEveryHostTheAppUses()
+    {
+        var names = Downloads.BundledRoots.Select(root => root.GetNameInfo(X509NameType.SimpleName, false)).ToList();
+        Assert.Equal(13, Downloads.BundledRoots.Count);
+        foreach (var expected in new[] { "Sectigo Public Server Authentication Root E46", "USERTrust ECC Certification Authority", "ISRG Root X1", "GlobalSign Root CA", "GTS Root R4", "DigiCert Global Root G2" })
+            Assert.Contains(expected, names);
+        foreach (var root in Downloads.BundledRoots)
+        {
+            Assert.Equal(root.Subject, root.Issuer);
+            Assert.True(root.NotAfter > new DateTime(2028, 1, 1));
+            Assert.Contains(root.Extensions.OfType<X509BasicConstraintsExtension>(), e => e.CertificateAuthority);
+        }
+    }
+
+    [Fact]
+    public void GithubChainValidatesAgainstBundledRootsWithoutTheSystemStore()
+    {
+        var chain = Chain();
+        var when = new DateTime(2026, 9, 18, 12, 0, 0, DateTimeKind.Utc);
+        Assert.Equal("github.com", chain[0].GetNameInfo(X509NameType.DnsName, false));
+        Assert.True(Downloads.ChainsToBundledRoot(chain[0], chain.Skip(1), when));
+        Assert.False(Downloads.ChainsToBundledRoot(chain[0], [], when), "without the server's intermediates the leaf cannot reach a root");
+        Assert.False(Downloads.ChainsToBundledRoot(chain[0], chain.Skip(1), new DateTime(2027, 6, 1)), "an expired leaf is not rescued");
+    }
+
+    [Fact]
+    public void OnlyMissingTrustIsRescuedAndEveryOtherFailureNamesTheHost()
+    {
+        var chain = Chain();
+        using var system = new X509Chain();
+        system.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust; // an empty trust store: what a Windows without the root sees
+        system.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        system.ChainPolicy.DisableCertificateDownloads = true;
+        system.ChainPolicy.VerificationTime = new DateTime(2026, 9, 18, 12, 0, 0, DateTimeKind.Utc);
+        foreach (var intermediate in chain.Skip(1)) system.ChainPolicy.ExtraStore.Add(intermediate);
+        Assert.False(system.Build(chain[0]));
+        Assert.Contains(system.ChainStatus, s => s.Status.HasFlag(X509ChainStatusFlags.UntrustedRoot) || s.Status.HasFlag(X509ChainStatusFlags.PartialChain));
+        Assert.True(Downloads.ValidateCertificate(new object(), chain[0], system, SslPolicyErrors.RemoteCertificateChainErrors));
+        var mismatch = Assert.Throws<AuthenticationException>(() => Downloads.ValidateCertificate(new object(), chain[0], system, SslPolicyErrors.RemoteCertificateNameMismatch));
+        Assert.Contains("not valid for it", mismatch.Message);
+        Assert.True(Downloads.ValidateCertificate(new object(), null, null, SslPolicyErrors.None));
+        Assert.Throws<AuthenticationException>(() => Downloads.ValidateCertificate(new object(), null, null, SslPolicyErrors.RemoteCertificateChainErrors));
+    }
+
+    [Fact]
+    public async Task ATrustFailureIsReportedOnceWithoutRetries()
+    {
+        var handler = new FakeHandler(_ => throw new HttpRequestException("The SSL connection could not be established, see inner exception.",
+            new AuthenticationException("Windows on this PC does not trust the root certificate behind github.com (UntrustedRoot)")));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => new Downloads(client).TextAsync(Sources.Config, CancellationToken.None));
+        Assert.Contains("Secure connection to github.com refused: Windows on this PC does not trust", error.Message);
+        Assert.Single(handler.Requests);
     }
 }
 

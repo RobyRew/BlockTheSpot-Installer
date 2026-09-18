@@ -43,7 +43,7 @@ The watcher commits only when observations change and then dispatches the Pages 
 
 ## Reliability
 
-The app verifies downloaded PE files, expected sizes when supplied, and Spotify's Authenticode publisher before launching setup. It waits for setup to exit and verifies the installed version and architecture. Patch files are staged before use; failed replacements restore a snapshot of the previous files. Reinstalling Spotify refreshes the original DLL backup so it does not keep an older version's backup.
+The app carries the public root certificates of every host it downloads from and uses them only when Windows fails for a missing root (`UntrustedRoot`), a known state of Windows installs without automatic root updates; any other TLS failure is reported with the host and issuer. It verifies downloaded PE files, expected sizes when supplied, and Spotify's Authenticode publisher before launching setup. It waits for setup to exit and verifies the installed version and architecture. Patch files are staged before use; failed replacements restore a snapshot of the previous files. Reinstalling Spotify refreshes the original DLL backup so it does not keep an older version's backup.
 
 These checks do not turn untested Spotify versions into supported versions. The latest upstream BlockTheSpot configuration is still checked, and an incompatible upstream minimum stops installation rather than silently changing the pinned default.
 

@@ -1,8 +1,11 @@
 using System.Buffers;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Reflection.PortableExecutable;
+using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace BlockTheSpot.Core;
 
@@ -18,8 +21,59 @@ public sealed class Downloads(HttpClient client)
     {
         ConnectTimeout = TimeSpan.FromSeconds(20),
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        AutomaticDecompression = DecompressionMethods.All
+        AutomaticDecompression = DecompressionMethods.All,
+        SslOptions = { RemoteCertificateValidationCallback = ValidateCertificate }
     }) { Timeout = Timeout.InfiniteTimeSpan, DefaultRequestHeaders = { { "User-Agent", "BlockTheSpotInstaller" } } };
+
+    // Windows without automatic root updates lacks recent public roots; github.com chains to
+    // Sectigo's 2021 root and was reported as UntrustedRoot. Public roots for every host the app
+    // uses are shipped with it (Roots.pem) and consulted only when the system chain fails for
+    // missing trust alone. Name mismatches, expiry or bad signatures still fail.
+    public static X509Certificate2Collection BundledRoots { get; } = LoadBundledRoots();
+
+    private static X509Certificate2Collection LoadBundledRoots()
+    {
+        using var stream = typeof(Downloads).Assembly.GetManifestResourceStream("BlockTheSpot.Core.Roots.pem")
+            ?? throw new InvalidOperationException("Bundled root certificates are missing from the build.");
+        using var reader = new StreamReader(stream);
+        var roots = new X509Certificate2Collection();
+        roots.ImportFromPem(reader.ReadToEnd());
+        return roots;
+    }
+
+    private const X509ChainStatusFlags MissingTrustOnly = X509ChainStatusFlags.UntrustedRoot | X509ChainStatusFlags.PartialChain |
+        X509ChainStatusFlags.OfflineRevocation | X509ChainStatusFlags.RevocationStatusUnknown;
+
+    public static bool ValidateCertificate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
+    {
+        if (errors == SslPolicyErrors.None) return true;
+        var host = sender is SslStream stream ? stream.TargetHostName : "the server";
+        if (errors != SslPolicyErrors.RemoteCertificateChainErrors || certificate is null || chain is null)
+            throw new AuthenticationException($"The certificate presented for {host} is not valid for it ({errors}).");
+        var status = string.Join(", ", chain.ChainStatus.Select(s => s.Status.ToString()).Distinct());
+        if (chain.ChainStatus.Any(s => (s.Status & ~MissingTrustOnly) != 0))
+            throw new AuthenticationException($"The certificate chain of {host} is invalid ({status}).");
+        using var leaf = new X509Certificate2(certificate);
+        if (ChainsToBundledRoot(leaf, chain.ChainElements.Select(e => e.Certificate)))
+            return true;
+        var top = chain.ChainElements[^1].Certificate.Issuer;
+        throw new AuthenticationException($"Windows on this PC does not trust the root certificate behind {host} ({status}; issuer {top}), " +
+            "and it is not one shipped with this app. Install Windows updates so root certificates refresh, check the date and time, " +
+            "and check antivirus HTTPS scanning or a company proxy.");
+    }
+
+    /// <summary>Rebuilds the chain with the bundled roots as the only trust anchors and the server's intermediates as extras.</summary>
+    public static bool ChainsToBundledRoot(X509Certificate2 leaf, IEnumerable<X509Certificate2> intermediates, DateTime? verificationTime = null)
+    {
+        using var custom = new X509Chain();
+        custom.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        custom.ChainPolicy.CustomTrustStore.AddRange(BundledRoots);
+        custom.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        custom.ChainPolicy.DisableCertificateDownloads = true;
+        foreach (var intermediate in intermediates) custom.ChainPolicy.ExtraStore.Add(intermediate);
+        if (verificationTime is { } time) custom.ChainPolicy.VerificationTime = time;
+        return custom.Build(leaf);
+    }
 
     public async Task<string> TextAsync(Uri uri, CancellationToken token)
     {
@@ -104,6 +158,11 @@ public sealed class Downloads(HttpClient client)
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             if (etag is not null && EntityTagHeaderValue.TryParse(etag, out var tag)) request.Headers.IfMatch.Add(tag);
             try { response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token); }
+            catch (HttpRequestException error) when (error.InnerException is AuthenticationException tls)
+            {
+                // A trust failure is deterministic; retrying only delays the same answer.
+                throw new HttpRequestException($"Secure connection to {uri.Host} refused: {tls.Message}", error);
+            }
             catch (HttpRequestException) when (attempt < 2)
             {
                 await Task.Delay(TimeSpan.FromSeconds(attempt + 1), token);

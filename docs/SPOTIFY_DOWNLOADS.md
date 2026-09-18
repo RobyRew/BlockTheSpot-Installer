@@ -158,3 +158,23 @@ curl -sI https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.9
 
 A signed link is only ever obtained by the watcher's optional second sensor in CI; the installer
 itself never holds a Spotify session.
+
+## Certificate roots the installer carries
+
+Reported 2026-09-18 from a Windows PC: `The SSL connection could not be established … UntrustedRoot`
+on the first `github.com` request, while the `*.github.io` catalog had loaded. Chains observed that day:
+
+| Host | Chain root |
+|---|---|
+| `github.com`, `api.github.com` | Sectigo Public Server Authentication Root E46 (cross-signed by USERTrust ECC) |
+| `*.github.io`, `objects.githubusercontent.com`, `raw.githubusercontent.com` | ISRG Root X1 |
+| `*.scdn.co` | GlobalSign Root CA - R3 |
+| `loadspot.amd64fox1.workers.dev` | GTS Root R4 (cross-signed by GlobalSign Root CA) |
+
+Windows receives the 2021 Sectigo root only through automatic root updates, which debloated,
+LTSC or offline installs may lack. `src/BlockTheSpot.Core/Roots.pem` (13 public roots taken from
+Apple's system root store, SHA-256 fingerprints inside) is consulted by `Downloads.ValidateCertificate`
+only when the system chain fails for `UntrustedRoot`/`PartialChain` alone; the server's intermediates
+are reused and the leaf must chain to one of the bundled roots. Any other TLS failure is fatal and
+reported with the host and issuer, without retries. `testdata/github_com_chain_2026-09-18.pem` keeps
+that day's chain for the regression test (verification time fixed to the capture date).

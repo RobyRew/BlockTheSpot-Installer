@@ -6,5 +6,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5"><PrivateAssets>all</PrivateAssets></PackageReference>
     <ProjectReference Include="../../src/BlockTheSpot.Core/BlockTheSpot.Core.csproj" />
     <None Include="../../testdata/loadspot_versions.json" Link="loadspot_versions.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../testdata/github_com_chain_2026-09-18.pem" Link="github_com_chain_2026-09-18.pem" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

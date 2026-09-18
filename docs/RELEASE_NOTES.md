@@ -8,28 +8,10 @@ Any Spotify version, Spotify's servers first, and a single-window layout.
 - **Checksums.** Builds the watcher observed carry a SHA-256 taken from Spotify's own file; the app hashes the whole download and refuses a mismatch before the Authenticode check. The tested build is pinned to its hash as well. Spotify's permanent URL is requested with `If-Match`, so a build that has rotated answers 412 and the app moves to the next source instead of running the wrong installer.
 - The Pages feed `api/v1/windows-x64.json` now lists every build and adds `official` (with `etag` while current), `archive` and `sha256` next to the mirror `url`. The upstream LoadSpot table is still accepted as a fallback.
 - The Windows UI smoke test now also lists all versions, filters, types a version, and switches modes before rendering both themes.
+- **Fix: "The SSL connection could not be established … UntrustedRoot".** Windows without automatic root-certificate updates does not know the 2021 Sectigo root behind `github.com`, so the first download of BlockTheSpot's files failed. The app now ships the public roots of every host it uses (Sectigo E46, USERTrust, ISRG, GlobalSign, GTS, DigiCert) and uses them only when Windows fails for a missing root; a name mismatch, expiry or bad chain still fails, a trust failure is reported once without retries, and the message names the host and the untrusted issuer.
 
 **Downloads:** `BlockTheSpotInstaller.exe` and its SHA-256 checksum in `SHA256SUMS.txt`.
 
 Open the app normally, without “Run as administrator.” The Spotify setup and patch target the current Windows account. The executable is not code-signed; Spotify's downloaded installer is signature-checked before it runs.
 
-Verification: 66 core regression tests on both Linux and Windows, 19 catalog/site/watcher checks, and the native Windows startup/render test in both themes. The full install/reinstall process is not exercised on GitHub's hosted runners.
-
----
-
-A native Windows app with a clearer install flow and a fixed, tested Spotify default.
-
-- New Windows 11 Fluent interface with system light/dark appearance, scalable text, keyboard navigation, and a collapsible activity log.
-- Spotify **1.2.93.667.g7b5cc0ce** is the default and latest tested compatible version. Newer builds require an explicit Advanced option.
-- Spotify versions load from a compact GitHub Pages feed with a bounded fallback to the live LoadSpot catalog. Version-specific links retain their exact architecture and file size.
-- Download validation, Spotify publisher verification, staged patch files, rollback on replacement failure, and refreshed backups after reinstalling Spotify.
-- Explicit Microsoft Store replacement, cancellation during downloads, visible progress, and log export.
-- Self-contained Windows x64 EXE; no separate .NET installation needed.
-- [Astro download library](https://robyrew.github.io/BlockTheSpot-Installer/) with Windows, macOS, and Linux versions; architecture and source filters; search; light/dark themes; and static JSON APIs. Checks for new versions every six hours and rebuilds only when catalog data changes.
-- Official Spotify-hosted links and community mirrors are clearly distinguished. Older official CDN links may no longer be available; recent version-specific downloads use the maintained LoadSpot mirror.
-
-**Downloads:** `BlockTheSpotInstaller.exe` and its SHA-256 checksum in `SHA256SUMS.txt`.
-
-Open the app normally, without “Run as administrator.” The Spotify setup and patch target the current Windows account. The executable is not code-signed; Spotify's downloaded installer is signature-checked before it runs.
-
-Verification: 34 core regression tests on both Linux and Windows, 12 catalog/site checks, native Windows startup/render tests in both themes, and a verified release checksum. A Windows runner also downloaded Spotify 1.2.93.667.g7b5cc0ce and verified its expected size and valid Spotify Authenticode publisher. The full install/reinstall process is not exercised on GitHub's hosted runners.
+Verification: 73 core regression tests on both Linux and Windows, 23 catalog/site/watcher checks, and the native Windows startup/render test in both themes. The full install/reinstall process is not exercised on GitHub's hosted runners.
