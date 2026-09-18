@@ -119,14 +119,15 @@ export function applyObservations(previous, heads, captures, checkedAt) {
     const before = watched[id] ?? {};
     watched[id] = { ...head, checkedAt, changedAt: before.etag === head.etag ? before.changedAt ?? checkedAt : checkedAt };
   }
-  const builds = [...(previous?.builds ?? [])];
+  // Deep copies: later steps update records in place, and change detection compares against `previous`.
+  const builds = (previous?.builds ?? []).map(build => structuredClone(build));
   for (const build of captures) {
     const index = builds.findIndex(b => b.sha256 === build.sha256);
     if (index >= 0) builds[index] = { ...builds[index], ...build, capturedAt: builds[index].capturedAt, sensors: [...new Set([...(builds[index].sensors ?? []), ...(build.sensors ?? [])])] };
     else builds.unshift(build);
   }
   builds.sort((a, b) => Date.parse(b.lastModified) - Date.parse(a.lastModified) || a.architecture.localeCompare(b.architecture));
-  return { schemaVersion: 1, watched, ...(previous?.updateService ? { updateService: previous.updateService } : {}), builds };
+  return { schemaVersion: 1, watched, ...(previous?.updateService ? { updateService: structuredClone(previous.updateService) } : {}), builds };
 }
 
 /** Fixed key order for the file, so a run that learned nothing new writes byte-identical JSON. */

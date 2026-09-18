@@ -189,6 +189,10 @@ test('Observations merge by hash, keep the first capture date and union the sens
   assert.equal(rotated.builds.length, 2);
   assert.equal(rotated.builds[0].fullVersion, '1.3.2.100.g11111111', 'newest build first');
   assert.equal(rotated.watched['windows-x64'].changedAt, '2026-09-20T01:00:00.000Z');
+  const next = applyObservations(again, {}, [], t1);
+  next.builds[0].archive = 'https://example.test/copy';
+  assert.equal(again.builds[0].archive, undefined, 'records are copied, so an in-place update is a detectable change');
+  assert.notEqual(canonical(again), canonical(next));
 });
 
 test('Update-service offers verify a captured build by hash, flag a conflict, and list unseen builds', () => {
