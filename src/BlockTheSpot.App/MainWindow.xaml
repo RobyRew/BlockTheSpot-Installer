@@ -70,13 +70,15 @@
                         </ComboBox.ItemsPanel>
                         <ComboBox.ItemTemplate>
                             <DataTemplate>
+                                <!-- Version and badge keep their natural width; the detail trims when the row is narrow. -->
                                 <Grid Margin="2,2">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                     <StackPanel Orientation="Horizontal">
                                         <TextBlock Text="{Binding Title}" FontWeight="SemiBold" VerticalAlignment="Center"/>
                                         <Border Style="{StaticResource Badge}"><TextBlock Text="{Binding Badge}" FontSize="11"/></Border>
                                     </StackPanel>
-                                    <TextBlock Grid.Column="1" Text="{Binding Detail}" Style="{StaticResource Hint}" Margin="12,0,4,0" VerticalAlignment="Center" TextWrapping="NoWrap"/>
+                                    <TextBlock Grid.Column="1" Text="{Binding Detail}" Style="{StaticResource Hint}" Margin="12,0,4,0" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                                 </Grid>
                             </DataTemplate>
                         </ComboBox.ItemTemplate>
