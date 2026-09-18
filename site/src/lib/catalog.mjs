@@ -120,12 +120,16 @@ export function filterCatalog(entries, { query = '', platform = 'all', architect
   return sort === 'oldest' ? result.toReversed() : result;
 }
 
+// Installer feed: every Windows x64 build. `url` keeps the LoadSpot mirror (the stable link) so
+// older parsers still work; `official` carries Spotify's own link when one was ever published,
+// which the installer tries first and falls back from when Spotify has expired it.
 export function windowsFeed(entries) {
-  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64' &&
-    compareVersions(entry.version, TESTED_VERSION) >= 0).map(entry => {
-    const source = selectSource(entry);
+  return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64').map(entry => {
+    const official = entry.sources.find(source => source.kind === 'official')?.url;
+    const mirror = entry.sources.find(source => source.kind === 'mirror')?.url;
     return [entry.version, { fullversion: entry.fullVersion, win: { x64: {
-      url: source.url, ...(entry.date ? { date: entry.date.split('-').reverse().join('.') } : {}), size: entry.size ?? 0,
+      url: mirror ?? official, ...(official && mirror ? { official } : {}),
+      ...(entry.date ? { date: entry.date.split('-').reverse().join('.') } : {}), size: entry.size ?? 0,
     } } }];
   }));
 }

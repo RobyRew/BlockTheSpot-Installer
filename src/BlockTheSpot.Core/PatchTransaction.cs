@@ -56,6 +56,15 @@ public sealed class PatchTransaction(IFileOperations? operations = null)
         });
     }
 
+    /// <summary>Removes patch files and the DLL backup after Spotify setup replaced the patched DLL with a fresh original.</summary>
+    public void Discard(string spotifyDirectory)
+    {
+        var leftovers = new[] { "blockthespot.dll", "config.ini", "chrome_elf_required.dll" }
+            .Select(name => Path.Combine(spotifyDirectory, name)).Where(File.Exists).ToList();
+        if (leftovers.Count == 0) return;
+        Run(spotifyDirectory, () => { foreach (var path in leftovers) files.Delete(path); });
+    }
+
     private void Run(string directory, Action change)
     {
         Directory.CreateDirectory(directory);

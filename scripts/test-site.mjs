@@ -76,15 +76,27 @@ test('Sort uses numeric versions, and reversing never mutates the catalog', () =
   assert.deepEqual(oldest.toReversed(), newest);
   assert.equal(newest[0], catalog.entries[0]);
 });
-test('Installer feed is compact, compatible with existing parser and keeps the tested pin', () => {
+test('Installer feed lists every Windows x64 build with the mirror as url and Spotify as official', () => {
   const feed = windowsFeed(catalog.entries);
-  assert.ok(JSON.stringify(feed).length < 30000);
-  assert.ok(Object.keys(feed).length > 10);
+  assert.ok(JSON.stringify(feed).length < 150000);
+  const windows = catalog.entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64');
+  assert.equal(Object.keys(feed).length, windows.length);
+  assert.ok(windows.some(entry => compareVersions(entry.version, TESTED_VERSION) < 0), 'older builds are part of the feed');
   assert.equal(feed['1.2.93.667'].fullversion, TESTED_VERSION);
+  let withOfficial = 0;
   for (const [version, entry] of Object.entries(feed)) {
-    assert.ok(compareVersions(version, TESTED_VERSION) >= 0);
-    assert.ok(sourceFor(entry.win.x64.url, entry.fullversion, 'windows', 'x64'));
+    const { url, official } = entry.win.x64;
+    assert.ok(sourceFor(url, entry.fullversion, 'windows', 'x64'));
+    if (official) {
+      withOfficial++;
+      assert.equal(sourceFor(official, entry.fullversion, 'windows', 'x64').kind, 'official');
+      assert.equal(sourceFor(url, entry.fullversion, 'windows', 'x64').kind, 'mirror');
+    }
+    assert.ok(version);
   }
+  assert.ok(withOfficial > 100);
+  const fixtureFeed = windowsFeed(entries);
+  assert.deepEqual(Object.keys(fixtureFeed['1.2.85.519'].win.x64).sort(), ['date', 'size', 'url']);
 });
 test('Snapshot refresh is idempotent: unchanged metadata does not cause another deployment', () => {
   const merged = mergeCatalogs(catalog.entries, catalog.entries);

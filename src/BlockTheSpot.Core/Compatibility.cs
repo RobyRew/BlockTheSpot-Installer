@@ -12,12 +12,12 @@ public static class Compatibility
     public static void ValidateChoice(SpotifyChoice choice, bool allowUntested)
     {
         if (!allowUntested && !string.Equals(choice.FullVersion, TestedVersion, StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException($"The tested Spotify version is {TestedVersion}. Enable untested versions in Advanced options to choose a different version.");
+            throw new InvalidOperationException($"The tested Spotify version is {TestedVersion}. Tick 'All versions' to choose a different build.");
     }
 
     public static void ValidateInstalled(string installed, bool allowUntested)
     {
         if (!allowUntested && SpotifyVersions.Parse(installed) != SpotifyVersions.Parse(TestedVersion))
-            throw new InvalidOperationException($"Spotify {installed} has not been verified with this release. Enable 'Install selected Spotify version' to install {TestedVersion}.");
+            throw new InvalidOperationException($"Spotify {installed} has not been verified with this release. Enable 'Install this Spotify version' to install {TestedVersion}, or tick 'All versions' to keep it.");
     }
 }

@@ -7,27 +7,33 @@ namespace BlockTheSpot.Tests;
 
 public sealed class CatalogTests
 {
+    private static string Fixture => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json"));
+
     [Fact]
-    public void LiveSchemaSelectsExactScreenshotVersionAndSortsNewestFirst()
+    public void LiveSchemaListsEveryReleaseNewestFirstAndSelectsTheTestedVersion()
     {
-        var result = SpotifyVersions.Read(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json")), "1.2.93.667");
-        Assert.Equal(4, result.Choices.Count);
+        var result = SpotifyVersions.Read(Fixture, "1.2.93.667");
+        Assert.Equal(5, result.Choices.Count);
         Assert.Equal("1.3.1.223.g6311b0a4", result.Choices[1].FullVersion);
+        Assert.Equal("1.2.85.519.g549a528b", result.Choices[^1].FullVersion);
         Assert.Equal("1.2.93.667.g7b5cc0ce", result.Selected.FullVersion);
         Assert.True(result.Selected.Recommended);
         Assert.Equal(146096232, result.Selected.Size);
         Assert.Equal("01.07.2026", result.Selected.Date);
         Assert.Equal("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe", result.Selected.Url.AbsoluteUri);
+        Assert.Null(result.Selected.Mirror);
         Assert.Equal(SpotifyChoice.Latest, result.Choices[0]);
+        Assert.Null(result.Warning);
     }
 
     [Fact]
-    public void StaleCatalogKeepsExplicitLatestOption()
+    public void OlderVersionsStayListedWhenTheTestedVersionIsMissing()
     {
-        var result = SpotifyVersions.Read(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json")), "1.9.0.0");
-        Assert.Single(result.Choices);
+        var result = SpotifyVersions.Read(Fixture, "1.9.0.0");
+        Assert.Equal(5, result.Choices.Count);
         Assert.NotNull(result.Warning);
         Assert.Equal(SpotifyChoice.Latest, result.Selected);
+        Assert.All(result.Choices.Skip(1), choice => Assert.False(choice.Recommended));
     }
 
     [Theory]
@@ -35,15 +41,67 @@ public sealed class CatalogTests
     [InlineData("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-arm64.exe")]
     [InlineData("https://loadspot.amd64fox1.workers.dev.evil.test/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe")]
     [InlineData("https://user@loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe")]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe?fauth=abc")]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe")]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.668.g7b5cc0ce-4062.exe")]
     public void RejectsWrongArchitectureAndUnexpectedDownloadHosts(string url) =>
         Assert.False(SpotifyVersions.IsCatalogDownload(new(url), "1.2.93.667.g7b5cc0ce"));
 
     [Fact]
-    public void ReadsLegacyUrlsWithoutLosingInstallerBuildSuffix()
+    public void LegacyLinksBecomeSpotifyFirstWithTheMirrorFilenameAsFallback()
     {
         var result = SpotifyVersions.Read("""{"1.2.85.519":{"buildType":"Release","fullversion":"1.2.85.519.g549a528b","links":{"win":{"x64":"https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.85.519.g549a528b-4062.exe"}}}}""", "1.2.85.500");
-        Assert.EndsWith("-4062.exe", result.Selected.Url.AbsoluteUri);
-        Assert.False(result.Selected.Recommended);
+        var choice = result.Choices[1];
+        Assert.EndsWith("-4062.exe", choice.Url.AbsoluteUri);
+        Assert.True(SpotifyVersions.IsOfficial(choice.Url));
+        Assert.Equal("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.85.519.g549a528b-x64.exe", choice.Mirror!.AbsoluteUri);
+        Assert.Equal(2, choice.Urls.Count());
+        Assert.False(choice.Recommended);
+        Assert.Equal(SpotifyChoice.Latest, result.Selected);
+    }
+
+    [Fact]
+    public void PagesFeedWithBothLinksTriesSpotifyThenTheMirror()
+    {
+        var result = SpotifyVersions.Read("""{"1.2.85.519":{"fullversion":"1.2.85.519.g549a528b","win":{"x64":{"url":"https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.85.519.g549a528b-x64.exe","official":"https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.85.519.g549a528b-4062.exe","date":"12.05.2026","size":10}}}}""", "1.2.93.667");
+        var choice = result.Choices[1];
+        Assert.Equal("upgrade.scdn.co", choice.Url.Host);
+        Assert.Equal("loadspot.amd64fox1.workers.dev", choice.Mirror!.Host);
+        Assert.Equal(2, choice.Urls.Count());
+        Assert.Equal("Spotify · mirror fallback", choice.Source);
+        Assert.Equal("12.05.2026", choice.Date);
+    }
+
+    [Theory]
+    [InlineData("1.2.80.699.gd5f6ebe3", "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe", 1)]
+    [InlineData("  https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe ", "https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe", 1)]
+    [InlineData("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.80.699.gd5f6ebe3-77.exe", "https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.80.699.gd5f6ebe3-77.exe", 2)]
+    public void TypedVersionsAndKnownHostLinksBecomeCustomChoices(string input, string url, int sources)
+    {
+        var choice = SpotifyVersions.TryCustom(input)!;
+        Assert.Equal("1.2.80.699.gd5f6ebe3", choice.FullVersion);
+        Assert.Equal(url, choice.Url.AbsoluteUri);
+        Assert.Equal(sources, choice.Urls.Count());
+        Assert.True(choice.Custom);
+        Assert.Equal("Custom", choice.Badge);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("1.2.80")]
+    [InlineData("1.2.80.699")]
+    [InlineData("2.0.0.1.gabcdef12")]
+    [InlineData("https://example.test/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe")]
+    [InlineData("http://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-x64.exe")]
+    [InlineData("https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.80.699.gd5f6ebe3-arm64.exe")]
+    public void PartialVersionsAndForeignLinksAreNotInstallable(string input) => Assert.Null(SpotifyVersions.TryCustom(input));
+
+    [Fact]
+    public void TheLatestOfficialLinkIsRecognizedAsSpotify()
+    {
+        Assert.Same(SpotifyChoice.Latest, SpotifyVersions.TryCustom(Sources.LatestSpotify.AbsoluteUri));
+        Assert.True(SpotifyVersions.IsOfficial(Sources.LatestSpotify));
+        Assert.Equal("Spotify", SpotifyChoice.Latest.Source);
     }
 
     [Theory]
@@ -71,9 +129,7 @@ public sealed class CatalogTests
     [Fact]
     public async Task PagesFeedLoadsWithoutDependingOnOtherServers()
     {
-        var handler = new FakeHandler(uri => uri == Sources.CatalogApi
-            ? Response.Text(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json")))
-            : throw new InvalidOperationException("Unexpected upstream request"));
+        var handler = new FakeHandler(uri => uri == Sources.CatalogApi ? Response.Text(Fixture) : throw new InvalidOperationException("Unexpected upstream request"));
         using var client = new HttpClient(handler);
         var result = await new CatalogService(new Downloads(client)).LoadAsync(CancellationToken.None);
         Assert.Null(result.Warning);
@@ -87,8 +143,7 @@ public sealed class CatalogTests
     [InlineData("{\"1.2.93.667\":{\"fullversion\":\"1.99999999999999.3.4.gabcdefab\"}}")]
     public async Task BrokenPagesFeedFallsBackToMaintainedUpstream(string bad)
     {
-        var handler = new FakeHandler(uri => Response.Text(uri == Sources.CatalogApi ? bad :
-            File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "loadspot_versions.json"))));
+        var handler = new FakeHandler(uri => Response.Text(uri == Sources.CatalogApi ? bad : Fixture));
         using var client = new HttpClient(handler);
         var result = await new CatalogService(new Downloads(client)).LoadAsync(CancellationToken.None);
         Assert.Null(result.Warning);
@@ -289,6 +344,95 @@ public sealed class InstallerTests
             new(Compatibility.TestedChoice with { Size = 0 }, true, false, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
         Assert.DoesNotContain("remove-store", platform.Events);
         Assert.DoesNotContain("stop", platform.Events);
+    }
+
+    [Fact]
+    public async Task ExpiredSpotifyLinkFallsBackToTheMirrorAndReportsIt()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path);
+        var official = new Uri("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-4062.exe");
+        var handler = new FakeHandler(uri =>
+            uri == Sources.Config ? Response.Text(";1.2.93.667") :
+            uri == official ? new(HttpStatusCode.Forbidden) : Response.Binary(Response.Executable()));
+        using var client = new HttpClient(handler);
+        var stages = new List<string>();
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.TestedChoice with { Url = official, Mirror = Compatibility.TestedChoice.Url, Size = 0 }, true, false, false),
+            new InlineProgress<InstallProgress>(p => stages.Add(p.Stage + ": " + p.Detail)), CancellationToken.None);
+        Assert.Contains(official, handler.Requests);
+        Assert.Contains(Compatibility.TestedChoice.Url, handler.Requests);
+        Assert.Contains(stages, s => s.StartsWith("Switching source: Spotify did not serve this version (HTTP 403)"));
+        Assert.Contains("setup", platform.Events);
+    }
+
+    [Fact]
+    public async Task AMirrorOnlyChoiceIsNotRetriedElsewhere()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path);
+        var handler = new FakeHandler(uri => uri == Sources.Config ? Response.Text(";1.2.93.667") :
+            uri.Host == "github.com" ? Response.Binary(Response.Executable()) : new(HttpStatusCode.NotFound));
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<HttpRequestException>(() => new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.TestedChoice with { Size = 0 }, true, false, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
+        Assert.DoesNotContain("setup", platform.Events);
+        Assert.Equal([Compatibility.TestedChoice.Url], handler.Requests.Where(uri => uri.Host != "github.com"));
+    }
+
+    [Fact]
+    public async Task AMismatchedSpotifyFileIsRejectedInsteadOfSubstitutedFromTheMirror()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path);
+        var official = new Uri("https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.2.93.667.g7b5cc0ce-1.exe");
+        var handler = new FakeHandler(uri => uri == Sources.Config ? Response.Text(";1.2.93.667") : Response.Binary(Response.Executable()));
+        using var client = new HttpClient(handler);
+        await Assert.ThrowsAsync<InvalidDataException>(() => new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.TestedChoice with { Url = official, Mirror = Compatibility.TestedChoice.Url, Size = 999 }, true, false, false),
+            new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
+        Assert.DoesNotContain(Compatibility.TestedChoice.Url, handler.Requests);
+        Assert.DoesNotContain("setup", platform.Events);
+    }
+
+    [Fact]
+    public async Task SpotifyOnlyInstallSkipsThePatchServerAndAcceptsAnyVersion()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path) { Version = "1.2.93.667" };
+        File.WriteAllText(Path.Combine(directory.Path, "blockthespot.dll"), "old patch");
+        File.WriteAllText(Path.Combine(directory.Path, "chrome_elf_required.dll"), "old backup");
+        var handler = new FakeHandler(uri => uri.Host == "github.com" ? throw new InvalidOperationException("Patch server contacted") : Response.Binary(Response.Executable()));
+        using var client = new HttpClient(handler);
+        var choice = SpotifyVersions.TryCustom("1.2.40.599.g606b7f29")!;
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(choice, true, false, false, AllowUntested: false, ApplyPatch: false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None);
+        Assert.Equal(["signature", "stop", "setup", "stop"], platform.Events);
+        Assert.Equal("1.2.40.599.g606b7f29", platform.Version);
+        Assert.Equal(["chrome_elf.dll"], Directory.GetFiles(directory.Path).Select(Path.GetFileName).Order());
+    }
+
+    [Fact]
+    public async Task SpotifyOnlyWithoutReinstallHasNothingToDo()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path) { Version = "1.2.93.667" };
+        using var client = Client();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(Compatibility.TestedChoice, false, false, false, ApplyPatch: false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
+        Assert.Empty(platform.Events);
+    }
+
+    [Fact]
+    public async Task PatchRefusesVersionsBelowItsMinimumAndPointsToSpotifyOnlyMode()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path);
+        using var client = Client();
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(SpotifyVersions.TryCustom("1.2.40.599.g606b7f29")!, true, false, false, AllowUntested: true), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
+        Assert.Contains("turn off the patch", error.Message);
+        Assert.Empty(platform.Events);
     }
 
     private static HttpClient Client(bool failPatch = false) => new(new FakeHandler(uri =>

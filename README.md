@@ -7,10 +7,12 @@ A native Windows app for installing and restoring [BlockTheSpot](https://github.
 ## Install
 
 1. Download `BlockTheSpotInstaller.exe` and open it normally, **without running as administrator**.
-2. The default is **Spotify 1.2.93.667.g7b5cc0ce**, the latest tested compatible version for this release.
-3. Leave **Install selected Spotify version before patching** on to install that version. Turn it off only to keep an already compatible installation.
+2. The default is **Spotify 1.2.93.667.g7b5cc0ce**, the latest tested compatible version for this release. Tick **All versions** to pick any other build from the catalog, or type a full version or installer link.
+3. Leave **Install this Spotify version** on to install that version. Turn it off only to keep an already compatible installation.
 4. Select **Install BlockTheSpot**. The app downloads and validates all required files before changing Spotify.
 5. Use **Restore original Spotify** to undo the patch.
+
+Everything fits one window: the installed Spotify in the header, the version picker, four options (hover for details), status, and the actions. **Activity log** opens the log below the buttons.
 
 The EXE bundles the .NET runtime. It targets Windows x64, uses the system light/dark theme, and supports keyboard navigation and Windows scaling. Windows 11 is recommended; supported Windows 10 editions also work. Spotify and the patch must both be x64.
 
@@ -19,9 +21,11 @@ Support the artists you listen to. Please consider [Spotify Premium](https://www
 ## Versions and options
 
 - The tested default is pinned in `src/BlockTheSpot.Core/Compatibility.cs`. It does **not** follow the newest catalog entry or change automatically when an upstream script changes. Update this constant and its tests only after verifying a new version with BlockTheSpot.
-- **Advanced → Show newer, untested Spotify versions** exposes newer LoadSpot builds and the latest official Spotify installer. These versions are not presented as compatible by default.
+- **All versions** lists every Windows x64 build in the catalog (newest first, older than the tested one included) plus the latest official Spotify installer, and shows a filter box. A full version such as `1.2.80.699.gd5f6ebe3`, or a link on Spotify's `upgrade.scdn.co` or the LoadSpot mirror, typed into that box becomes an installable **Custom** choice. Only the tested build is presented as compatible.
+- **Apply BlockTheSpot patch** is on by default. Turned off, the app installs only the selected Spotify version, any version, removes previous patch files, and never contacts the patch server. The patch itself still refuses versions below BlockTheSpot's published minimum.
+- **Where installers come from.** Spotify publishes one permanent link per platform (`download.scdn.co/SpotifyFullSetupX64.exe`, always the current build) and hands versioned `upgrade.scdn.co` links only to logged-in clients as signed, expiring URLs; expired ones answer HTTP 403. The app therefore tries Spotify's link first when the catalog has one, falls back to the LoadSpot mirror (logged as *Switching source*), and verifies Spotify's Authenticode signature on every setup before running it. The full findings are in [docs/SPOTIFY_DOWNLOADS.md](docs/SPOTIFY_DOWNLOADS.md).
 - The live [LoadSpot catalog](https://loadspot.pages.dev/versions) comes from [`LoaderSpot/table`](https://github.com/LoaderSpot/table/blob/main/table/versions.json). Its predecessor [`LoaderSpot/LoaderSpot`](https://github.com/LoaderSpot/LoaderSpot) is archived. The maintained catalog includes architecture-specific download URLs, dates, and sizes.
-- **Refresh** loads the compact GitHub Pages feed first (four-second deadline), then the maintained upstream catalog (eight-second deadline), while preserving a valid selection. The known tested link remains available if both fail. Startup does not wait for the patch server; its current configuration is validated when installation starts.
+- **Refresh** (Ctrl+R) loads the compact GitHub Pages feed first (four-second deadline), then the maintained upstream catalog (eight-second deadline), while preserving a valid selection. The Pages feed carries both Spotify's link and the mirror per build; the upstream table carries one. The known tested link remains available if both fail. Startup does not wait for the patch server; its current configuration is validated when installation starts.
 - **Replace Microsoft Store edition** is opt-in and affects only the current Windows account.
 - Downloads can be cancelled. Once Spotify setup or file replacement begins, the operation finishes before the app can be closed.
 - The activity log can be saved locally. No analytics or telemetry are added by the application.
@@ -52,9 +56,9 @@ dotnet publish src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release -r win-x6
 
 Architecture:
 
-- `BlockTheSpot.Core`: catalog parsing, compatibility policy, streaming downloads, install orchestration, and transactional patch/restore. Windows operations use an injected interface, making failure paths testable.
+- `BlockTheSpot.Core`: catalog parsing with Spotify-first/mirror-fallback sources, typed version and link parsing, compatibility policy, streaming downloads, install orchestration (with or without the patch), and transactional patch/restore/discard. Windows operations use an injected interface, making failure paths testable.
 - `BlockTheSpot.App`: native WPF Fluent UI, view model, and Windows process/signature/installation adapter.
-- `tests`: regressions for catalog formats, pinned defaults, HTTP failures, partial downloads, cancellation, architecture checks, install ordering, backup refresh, and rollback.
+- `tests`: regressions for catalog formats, pinned defaults, source fallback, custom input, Spotify-only installs, HTTP failures, partial downloads, cancellation, architecture checks, install ordering, backup refresh, and rollback.
 - `site`: Astro 7 static version library, source validation and normalization, scheduled catalog updater, responsive search/filter UI, and versioned JSON endpoints. Node 24 is used in CI; dependencies are locked.
 
 The previous Go/Walk implementation is preserved in git history.
@@ -65,7 +69,7 @@ These are independent workflows:
 
 | Workflow | Trigger | Result |
 |---|---|---|
-| Installer CI | Commits/PRs touching app, tests, or build configuration | Linux/Windows tests, native UI smoke test, EXE artifact; **no release** |
+| Installer CI | Commits/PRs touching app, tests, or build configuration | Linux/Windows tests, native UI smoke test (renders both themes and drives the version picker), EXE artifact; **no release** |
 | Release installer | **Manual workflow dispatch** with an explicit version | Repeat all tests, build the self-contained EXE, publish `vX.Y.Z` with a SHA-256 checksum |
 | Spotify download library | Commits/PRs touching `site/`, its test, or its workflow | Build and test Astro; deploy to Pages only on `main` |
 | Catalog refresh | Every six hours, or manual Pages workflow dispatch | Fetch current metadata; commit, build and deploy **only if it changed** |
@@ -96,7 +100,7 @@ No Spotify binaries are stored in this repository or hosted on Pages. The catalo
 | Endpoint | Contents |
 |---|---|
 | [`api/v1/catalog.json`](https://robyrew.github.io/BlockTheSpot-Installer/api/v1/catalog.json) | Full normalized catalog: schema version, last data change, tested pin, upstream sources, and installers with explicit download origins |
-| [`api/v1/windows-x64.json`](https://robyrew.github.io/BlockTheSpot-Installer/api/v1/windows-x64.json) | Compact LoadSpot-compatible Windows x64 feed at or above the tested pin, consumed by the native app |
+| [`api/v1/windows-x64.json`](https://robyrew.github.io/BlockTheSpot-Installer/api/v1/windows-x64.json) | Compact LoadSpot-compatible Windows x64 feed of every build, consumed by the native app: `url` is the stable mirror link, `official` (when present) Spotify's own `upgrade.scdn.co` link, which the app tries first |
 
 The full feed's `entries` have `id`, `version`, `fullVersion`, `platform`, `architecture`, `format`, nullable `date`/`size`, `tested`, and `sources`. Each source has `url`, `kind` (`official` or `mirror`), and `label`. Dates are ISO dates and sizes are bytes. `updatedAt` changes only when the data changes, not on every scheduled check. Consumers should tolerate added fields; breaking changes require a new API path.
 

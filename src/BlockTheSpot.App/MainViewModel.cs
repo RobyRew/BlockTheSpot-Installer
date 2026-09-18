@@ -15,6 +15,7 @@ namespace BlockTheSpot.App;
 
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
+    private const string SourceNote = "Spotify's own link is tried first, then the LoadSpot mirror. Every installer's Spotify signature is checked before setup runs.";
     private readonly HttpClient http = Downloads.CreateClient();
     private readonly WindowsSpotifyPlatform platform = new();
     private readonly CatalogService catalog;
@@ -22,10 +23,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private CancellationTokenSource? operation;
     private readonly Queue<string> log = new();
-    private bool busy, loading, canCancel, reinstall = true, launch = true, removeStore, showLog, allowUntested;
+    private bool busy, loading, canCancel, reinstall = true, launch = true, removeStore, showLog, showAll, applyPatch = true;
     private IReadOnlyList<SpotifyChoice> catalogChoices = [];
-    private string status = "Getting ready", detail = "Loading Spotify versions…", installedLabel = "Checking your installation…", installedDetail = "";
-    private string hint = "Loading the Spotify version catalog", versionLabel = "v" + AppVersion, lastStage = "";
+    private string status = "Getting ready", detail = "Loading Spotify versions…", installedLabel = "Checking your installation…";
+    private string hint = "Loading the Spotify version catalog", versionLabel = "v" + AppVersion, lastStage = "", filter = "";
     private SpotifyChoice? selected;
     private double progressValue;
 
@@ -42,18 +43,22 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public bool IsBusy => busy;
     public bool IsLoading => loading;
     public bool CanCancel => busy && canCancel;
-    public bool ReinstallSpotify { get => reinstall; set => Set(ref reinstall, value); }
+    public bool ReinstallSpotify { get => reinstall; set { Set(ref reinstall, value); Notify(nameof(PrimaryAction)); } }
     public bool LaunchSpotify { get => launch; set => Set(ref launch, value); }
     public bool RemoveStoreEdition { get => removeStore; set => Set(ref removeStore, value); }
     public bool ShowLog { get => showLog; set => Set(ref showLog, value); }
-    public bool AllowUntested { get => allowUntested; set { Set(ref allowUntested, value); PopulateChoices(); } }
+    /// <summary>Lists every catalog build and accepts typed versions. Off, only the tested build is offered.</summary>
+    public bool ShowAllVersions { get => showAll; set { Set(ref showAll, value); PopulateChoices(); } }
+    public bool ApplyPatch { get => applyPatch; set { Set(ref applyPatch, value); Notify(nameof(PrimaryAction)); } }
+    public string Filter { get => filter; set { Set(ref filter, value); PopulateChoices(); } }
     public SpotifyChoice? SelectedChoice { get => selected; set => Set(ref selected, value); }
     public string Status { get => status; private set => Set(ref status, value); }
     public string StatusDetail { get => detail; private set => Set(ref detail, value); }
     public string InstalledLabel { get => installedLabel; private set => Set(ref installedLabel, value); }
-    public string InstalledDetail { get => installedDetail; private set => Set(ref installedDetail, value); }
     public string CatalogHint { get => hint; private set => Set(ref hint, value); }
     public string VersionLabel { get => versionLabel; private set => Set(ref versionLabel, value); }
+    public string AllVersionsLabel => catalogChoices.Count > 1 ? $"All versions ({catalogChoices.Count - 1})" : "All versions";
+    public string PrimaryAction => ApplyPatch ? "Install BlockTheSpot" : ReinstallSpotify ? "Install Spotify only" : "Nothing to install";
     public double ProgressValue { get => progressValue; private set { Set(ref progressValue, value); Notify(nameof(ProgressLabel)); } }
     public string ProgressLabel => busy ? $"{ProgressValue:0}%" : "";
     public string LogText => string.Join(Environment.NewLine, log);
@@ -64,7 +69,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         catalog = new(downloads);
         installer = new(downloads, platform);
         RefreshCommand = new(() => ObserveAsync(RefreshAsync), () => CanEdit);
-        InstallCommand = new(() => ObserveAsync(() => RunAsync(false)), () => CanEdit && SelectedChoice is not null);
+        InstallCommand = new(() => ObserveAsync(() => RunAsync(false)), () => CanEdit && SelectedChoice is not null && (ApplyPatch || ReinstallSpotify));
         RestoreCommand = new(() => ObserveAsync(() => RunAsync(true)), () => CanEdit);
         CancelCommand = new(Cancel, () => CanCancel);
         ReleasesCommand = new(() => OpenUrl(Sources.Repository + "/releases/latest"));
@@ -73,10 +78,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             catalogChoices = [Compatibility.TestedChoice, SpotifyChoice.Latest];
             PopulateChoices();
-            SelectedChoice = Choices[0];
-            InstalledLabel = "Spotify 1.2.93.667";
-            InstalledDetail = "Desktop edition · Ready to install BlockTheSpot";
-            CatalogHint = "Pinned to the latest tested compatible version. Newer builds are available in Advanced options.";
+            InstalledLabel = "Spotify 1.2.93.667 · desktop edition · not patched";
+            CatalogHint = SourceNote;
             Status = "Ready when you are";
             StatusDetail = "Spotify 1.2.93.667 will be installed before patching.";
         }
@@ -91,9 +94,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void Inspect()
     {
         var current = platform.Inspect();
-        InstalledLabel = current.Version is null ? "Spotify is not installed" : "Spotify " + current.Version;
-        InstalledDetail = current.Version is null ? "We'll install the selected desktop version for you." :
-            current.Patched ? "Desktop edition · BlockTheSpot installed" : "Desktop edition · Ready to patch";
+        InstalledLabel = current.Version is null ? "Spotify is not installed · the selected version will be installed" :
+            $"Spotify {current.Version} · desktop edition · {(current.Patched ? "BlockTheSpot installed" : "not patched")}";
     }
 
     private async Task RefreshAsync()
@@ -104,9 +106,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             var result = await catalog.LoadAsync(lifetime.Token);
             catalogChoices = result.Choices;
             PopulateChoices();
-            CatalogHint = result.Warning ?? $"Tested: {Compatibility.TestedVersion} · Newer builds require Advanced options.";
+            CatalogHint = result.Warning ?? SourceNote;
             Status = result.Warning is null ? "Ready when you are" : "Version list needs attention";
-            StatusDetail = result.Warning ?? "Choose your options, then install BlockTheSpot.";
+            StatusDetail = result.Warning ?? "Pick a version and options, then install.";
             AddLog(result.Warning ?? $"Loaded {result.Choices.Count - 1} Spotify versions from the catalog.");
         }
         finally { loading = false; ChangedState(); }
@@ -129,7 +131,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             if (restore) await installer.RestoreAsync(updates, cancellation.Token);
-            else await installer.InstallAsync(new(SelectedChoice!, ReinstallSpotify, LaunchSpotify, RemoveStoreEdition, AllowUntested), updates, cancellation.Token);
+            else
+            {
+                var choice = SelectedChoice!;
+                AddLog($"Selected {choice.Title} ({choice.Badge}) from {string.Join(" → ", choice.Urls.Select(u => u.Host))}.");
+                await installer.InstallAsync(new(choice, ReinstallSpotify, LaunchSpotify, RemoveStoreEdition, ShowAllVersions, ApplyPatch), updates, cancellation.Token);
+            }
             Inspect();
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
@@ -149,14 +156,29 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void PopulateChoices()
     {
         var previous = SelectedChoice;
-        var tested = catalogChoices.FirstOrDefault(c => c.FullVersion == Compatibility.TestedVersion) ?? Compatibility.TestedChoice;
+        var tested = catalogChoices.FirstOrDefault(c => string.Equals(c.FullVersion, Compatibility.TestedVersion, StringComparison.OrdinalIgnoreCase)) ?? Compatibility.TestedChoice;
+        var list = new List<SpotifyChoice> { tested with { Recommended = true } };
+        SpotifyChoice? typed = null;
+        if (ShowAllVersions)
+        {
+            var search = Filter.Trim();
+            list.AddRange(catalogChoices.Where(c => c.FullVersion != tested.FullVersion && (search.Length == 0 || Matches(c, search))).Select(c => c with { Recommended = false }));
+            // A full version or link that is not in the catalog is still installable; the download is verified like any other.
+            typed = SpotifyVersions.TryCustom(search);
+            if (typed is not null && !list.Any(c => Offers(c, typed.Url))) list.Add(typed);
+        }
         Choices.Clear();
-        Choices.Add(tested with { Recommended = true });
-        if (AllowUntested)
-            foreach (var choice in catalogChoices.Where(c => c.FullVersion != Compatibility.TestedVersion))
-                Choices.Add(choice with { Recommended = false });
-        SelectedChoice = Choices.FirstOrDefault(c => c.FullVersion == previous?.FullVersion) ?? Choices[0];
+        foreach (var choice in list) Choices.Add(choice);
+        // A deliberately typed version wins over the previous selection.
+        SelectedChoice = (typed is null ? null : Choices.FirstOrDefault(c => Offers(c, typed.Url)))
+            ?? Choices.FirstOrDefault(c => c.Url == previous?.Url) ?? Choices[0];
+        Notify(nameof(AllVersionsLabel));
     }
+
+    private static bool Matches(SpotifyChoice choice, string search) =>
+        choice.Title.Contains(search, StringComparison.OrdinalIgnoreCase) || choice.Urls.Any(u => u.AbsoluteUri.Contains(search, StringComparison.OrdinalIgnoreCase));
+    private static bool Offers(SpotifyChoice choice, Uri url) => choice.Url == url || choice.Mirror == url;
+
 
     private async Task CheckUpdateAsync()
     {

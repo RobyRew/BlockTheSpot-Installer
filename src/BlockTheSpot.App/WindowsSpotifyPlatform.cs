@@ -92,7 +92,7 @@ public sealed class WindowsSpotifyPlatform : ISpotifyPlatform
         using var stream = File.OpenRead(SpotifyExe);
         using var file = new PEReader(stream);
         if (file.PEHeaders.CoffHeader.Machine != Machine.Amd64)
-            throw new InvalidOperationException("BlockTheSpot requires Spotify x64. Enable 'Install selected Spotify version' to replace this installation.");
+            throw new InvalidOperationException("BlockTheSpot requires Spotify x64. Enable 'Install this Spotify version' to replace this installation.");
     }
 
     public void LaunchSpotify() =>
