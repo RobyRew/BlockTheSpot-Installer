@@ -2,6 +2,8 @@ export const TESTED_VERSION = '1.2.93.667.g7b5cc0ce';
 export const LIVE_CATALOG = 'https://raw.githubusercontent.com/LoaderSpot/table/main/table/versions.json';
 export const LEGACY_CATALOG = 'https://raw.githubusercontent.com/LoaderSpot/LoaderSpot/main/versions.json';
 export const LINUX_PACKAGES = 'https://repository.spotify.com/dists/stable/non-free/binary-amd64/Packages';
+export const REPOSITORY = 'RobyRew/BlockTheSpot-Installer';
+export const PERMANENT = { x64: '/SpotifyFullSetupX64.exe', arm64: '/SpotifyFullSetupARM64.exe', x86: '/SpotifyFullSetup.exe' };
 const versionPattern = /^1\.\d{1,5}\.\d{1,5}\.\d{1,8}\.g[0-9a-f]{8,40}$/i;
 const targets = [
   ['win', 'x64', 'windows', 'x64', 'win32-x86_64', 'exe'],
@@ -43,6 +45,13 @@ export function sourceFor(raw, fullVersion, platform, architecture) {
   if (url.hostname === 'repository.spotify.com' && platform === 'linux' &&
       url.pathname === `/pool/non-free/s/spotify-client/spotify-client_${fullVersion}_amd64.deb`)
     return { url: url.href, kind: 'official', label: 'Spotify repository' };
+  // Spotify's permanent full installers always serve the current build; applyOfficial attaches
+  // one only to the build whose ETag the watcher last saw there.
+  if (url.hostname === 'download.scdn.co' && platform === 'windows' && url.pathname === PERMANENT[architecture])
+    return { url: url.href, kind: 'official', label: 'Spotify (current build)' };
+  if (url.hostname === 'github.com' && platform === 'windows' &&
+      new RegExp(`^/${REPOSITORY}/releases/download/[A-Za-z0-9._-]+/spotify_installer-${fullVersion.replace(/\./g, '\\.')}-${architecture}\\.exe$`).test(url.pathname))
+    return { url: url.href, kind: 'archive', label: 'GitHub archive' };
   if (url.hostname === 'loadspot.amd64fox1.workers.dev') {
     const suffix = platform === 'macos' && architecture === 'x64' ? 'x86_64' : architecture;
     const file = platform === 'linux' ? `spotify-client_${fullVersion}_amd64.deb` : `${stem}-${suffix}.${format}`;
@@ -96,6 +105,7 @@ export function mergeCatalogs(...catalogs) {
     const previous = merged.get(entry.id);
     const sources = new Map([...(previous?.sources ?? []), ...entry.sources].map(source => [source.url, source]));
     merged.set(entry.id, { ...entry, date: entry.date ?? previous?.date ?? null, size: entry.size ?? previous?.size ?? null,
+      ...(entry.sha256 ?? previous?.sha256 ? { sha256: entry.sha256 ?? previous.sha256 } : {}),
       sources: [...sources.values()].sort((a, b) => a.kind.localeCompare(b.kind) || a.url.localeCompare(b.url)) });
   }
   const platforms = ['windows', 'macos', 'linux'];
@@ -105,11 +115,42 @@ export function mergeCatalogs(...catalogs) {
     architectures.indexOf(a.architecture) - architectures.indexOf(b.architecture) || a.id.localeCompare(b.id));
 }
 
+// Permanent Spotify links and the apt repository never expire; the CI archive is a copy taken from
+// them; LoadSpot mirrors are maintained; old Spotify CDN links have expired and come last.
+const preference = ['Spotify (current build)', 'Spotify repository', 'GitHub archive', 'LoadSpot mirror', 'Spotify CDN'];
 export function selectSource(entry, kind = 'all') {
   const sources = entry.sources.filter(source => kind === 'all' || source.kind === kind);
-  // Recent LoadSpot links are maintained. Old Spotify CDN URLs may have expired.
-  return sources.find(source => source.kind === 'official' && source.label === 'Spotify repository')
-    ?? sources.find(source => source.kind === 'mirror') ?? sources[0];
+  return sources.toSorted((a, b) => preference.indexOf(a.label) - preference.indexOf(b.label))[0];
+}
+
+/**
+ * Overlays the release watcher's observations (site/data/official.json) on the catalog: adds the
+ * SHA-256 CI computed from Spotify's own file, the CI archive copy when one exists, and, for the
+ * build currently behind a permanent URL, that URL with its ETag. Nothing here is persisted into
+ * catalog.json, so a permanent link never outlives the build it pointed at.
+ */
+export function applyOfficial(entries, official) {
+  if (!official?.builds?.length) return entries;
+  const current = new Set(Object.values(official.watched ?? {}).map(watched => watched.etag));
+  const observed = [];
+  for (const build of official.builds) {
+    if (!versionPattern.test(build.fullVersion ?? '') || !/^[0-9a-f]{64}$/.test(build.sha256 ?? '')) continue;
+    const sources = [];
+    if (current.has(build.etag) && sourceFor(build.url, build.fullVersion, build.platform, build.architecture)?.label === 'Spotify (current build)')
+      sources.push({ url: build.url, kind: 'official', label: 'Spotify (current build)', etag: build.etag });
+    const archive = build.archive && sourceFor(build.archive, build.fullVersion, build.platform, build.architecture);
+    if (archive?.kind === 'archive') sources.push(archive);
+    observed.push({
+      id: `${build.fullVersion}-${build.platform}-${build.architecture}`,
+      version: build.fullVersion.split('.').slice(0, 4).join('.'), fullVersion: build.fullVersion,
+      platform: build.platform, architecture: build.architecture, format: 'exe',
+      date: typeof build.lastModified === 'string' ? build.lastModified.slice(0, 10) : null,
+      size: Number.isSafeInteger(build.size) && build.size > 0 ? build.size : null,
+      tested: build.platform === 'windows' && build.architecture === 'x64' && build.fullVersion.toLowerCase() === TESTED_VERSION,
+      sha256: build.sha256, sources,
+    });
+  }
+  return mergeCatalogs(entries, observed);
 }
 
 export function filterCatalog(entries, { query = '', platform = 'all', architecture = 'all', source = 'all', sort = 'newest' } = {}) {
@@ -121,14 +162,22 @@ export function filterCatalog(entries, { query = '', platform = 'all', architect
 }
 
 // Installer feed: every Windows x64 build. `url` keeps the LoadSpot mirror (the stable link) so
-// older parsers still work; `official` carries Spotify's own link when one was ever published,
-// which the installer tries first and falls back from when Spotify has expired it.
+// older parsers still work. `official` is Spotify's own link: the permanent full installer with
+// its `etag` while that build is current, otherwise the historical upgrade.scdn.co link, which
+// Spotify has usually expired. `archive` is the CI copy and `sha256` the hash CI took from Spotify's file.
 export function windowsFeed(entries) {
   return Object.fromEntries(entries.filter(entry => entry.platform === 'windows' && entry.architecture === 'x64').map(entry => {
-    const official = entry.sources.find(source => source.kind === 'official')?.url;
-    const mirror = entry.sources.find(source => source.kind === 'mirror')?.url;
+    const find = label => entry.sources.find(source => source.label === label);
+    const current = find('Spotify (current build)');
+    const official = current ?? find('Spotify CDN');
+    const mirror = find('LoadSpot mirror')?.url;
+    const archive = find('GitHub archive')?.url;
     return [entry.version, { fullversion: entry.fullVersion, win: { x64: {
-      url: mirror ?? official, ...(official && mirror ? { official } : {}),
+      url: mirror ?? archive ?? official.url,
+      ...(official && (mirror || archive) ? { official: official.url } : {}),
+      ...(current ? { etag: current.etag } : {}),
+      ...(archive ? { archive } : {}),
+      ...(entry.sha256 ? { sha256: entry.sha256 } : {}),
       ...(entry.date ? { date: entry.date.split('-').reverse().join('.') } : {}), size: entry.size ?? 0,
     } } }];
   }));

@@ -51,7 +51,8 @@ jobs:
           echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   build:
     needs: refresh
-    if: always() && !cancelled() && (github.event_name == 'push' || github.event_name == 'pull_request' || needs.refresh.outputs.changed == 'true')
+    # A manual dispatch also comes from the release watcher after it committed new observations.
+    if: always() && !cancelled() && (github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || needs.refresh.outputs.changed == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

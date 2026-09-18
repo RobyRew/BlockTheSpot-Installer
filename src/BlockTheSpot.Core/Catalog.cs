@@ -21,18 +21,27 @@ public static class Sources
     // mirror as the fallback. Every download is still checked against Spotify's Authenticode signature.
     public const string MirrorHost = "loadspot.amd64fox1.workers.dev";
     public const string UpgradeHost = "upgrade.scdn.co";
+    // The release watcher (site/scripts/watch-official.mjs) downloads each new build from
+    // download.scdn.co, records its SHA-256 and ETag, and can attach the file to this release.
+    public const string ArchiveRepository = "RobyRew/BlockTheSpot-Installer";
 }
 
-/// <summary>One installable Spotify build. <see cref="Url"/> is tried first; <see cref="Mirror"/> is the fallback.</summary>
-public sealed record SpotifyChoice(string? FullVersion, Uri Url, string? Date = null, long Size = 0, bool Recommended = false, Uri? Mirror = null, bool Custom = false)
+/// <summary>
+/// One installable Spotify build. <see cref="Url"/> is tried first, then <see cref="Archive"/>, then <see cref="Mirror"/>.
+/// <see cref="Sha256"/> is the hash CI took from Spotify's own file; <see cref="ETag"/> binds the permanent URL to this build.
+/// </summary>
+public sealed record SpotifyChoice(string? FullVersion, Uri Url, string? Date = null, long Size = 0, bool Recommended = false, Uri? Mirror = null, bool Custom = false,
+    Uri? Archive = null, string? Sha256 = null, string? ETag = null)
 {
     public static SpotifyChoice Latest { get; } = new(null, Sources.LatestSpotify);
     public bool IsLatest => FullVersion is null;
     public string Title => FullVersion ?? "Latest official Spotify";
     public string Badge => Recommended ? "Tested" : IsLatest ? "Official" : Custom ? "Custom" : "Untested";
-    public string Source => SpotifyVersions.IsOfficial(Url) ? Mirror is null ? "Spotify" : "Spotify · mirror fallback" : "LoadSpot mirror";
-    public string Detail => string.Join(" · ", new[] { IsLatest ? "Current release" : Date, Size > 0 ? $"{Size / 1048576d:F0} MiB" : null, Source }.Where(s => !string.IsNullOrWhiteSpace(s)));
-    public IEnumerable<Uri> Urls => Mirror is null || Mirror == Url ? [Url] : [Url, Mirror];
+    public string Source => SourceOf(Url);
+    public string Detail => string.Join(" · ", new[] { IsLatest ? "Current release" : Date, Size > 0 ? $"{Size / 1048576d:F0} MiB" : null, Source,
+        Sha256 is null ? null : "SHA-256" }.Where(s => !string.IsNullOrWhiteSpace(s)));
+    public IEnumerable<Uri> Urls => new[] { Url, Archive, Mirror }.Where(u => u is not null).Distinct()!;
+    public static string SourceOf(Uri url) => SpotifyVersions.IsOfficial(url) ? "Spotify" : url.Host == "github.com" ? "GitHub archive" : "LoadSpot mirror";
     public override string ToString() => Title;
 }
 
@@ -77,10 +86,21 @@ public static partial class SpotifyVersions
     public static bool IsMirror(Uri url, string version) =>
         IsPlainHttps(url) && url.Host == Sources.MirrorHost && url.AbsolutePath == $"/download/spotify_installer-{version}-x64.exe";
 
+    /// <summary>A CI copy on this repository's releases, named after the exact build.</summary>
+    public static bool IsArchive(Uri url, string version) =>
+        IsPlainHttps(url) && url.Host == "github.com" && string.Equals(VersionFromArchive(url), version, StringComparison.OrdinalIgnoreCase);
+
     public static bool IsCatalogDownload(Uri url, string version) =>
-        IsMirror(url, version) || string.Equals(VersionFromOfficial(url), version, StringComparison.OrdinalIgnoreCase);
+        IsMirror(url, version) || IsArchive(url, version) || string.Equals(VersionFromOfficial(url), version, StringComparison.OrdinalIgnoreCase);
 
     public static Uri MirrorFor(string fullVersion) => new($"https://{Sources.MirrorHost}/download/spotify_installer-{fullVersion}-x64.exe");
+
+    private static string? VersionFromArchive(Uri url)
+    {
+        if (!IsPlainHttps(url) || url.Host != "github.com") return null;
+        var match = Regex.Match(url.AbsolutePath, $@"^/{Regex.Escape(Sources.ArchiveRepository)}/releases/download/[A-Za-z0-9._-]+/spotify_installer-(1\.\d+\.\d+\.\d+\.g[0-9a-fA-F]+)-x64\.exe$", RegexOptions.CultureInvariant);
+        return match.Success ? match.Groups[1].Value : null;
+    }
 
     private static string? VersionFromOfficial(Uri url)
     {
@@ -103,13 +123,15 @@ public static partial class SpotifyVersions
         if (!Uri.TryCreate(input, UriKind.Absolute, out var url) || !IsPlainHttps(url)) return null;
         if (url == Sources.LatestSpotify) return SpotifyChoice.Latest;
         if (VersionFromOfficial(url) is { } official) return new(official, url, Mirror: MirrorFor(official), Custom: true);
+        if (VersionFromArchive(url) is { } archived) return new(archived, url, Mirror: MirrorFor(archived), Custom: true);
         var mirror = Regex.Match(url.AbsolutePath, @"^/download/spotify_installer-(1\.\d+\.\d+\.\d+\.g[0-9a-fA-F]+)-x64\.exe$", RegexOptions.CultureInvariant);
         return url.Host == Sources.MirrorHost && mirror.Success ? new(mirror.Groups[1].Value, url, Custom: true) : null;
     }
 
     /// <summary>
     /// Reads every Windows x64 release build. Accepts the LoadSpot table (one url per build), the legacy
-    /// links schema, and the Pages feed, which may add "official" and "mirror" links next to "url".
+    /// links schema, and the Pages feed, which may add "official", "archive" and "mirror" links, the
+    /// "sha256" CI took from Spotify's file, and the "etag" that ties the permanent URL to this build.
     /// </summary>
     public static CatalogResult Read(string json, string tested)
     {
@@ -128,13 +150,18 @@ public static partial class SpotifyVersions
             var build = Text(entry, "buildType");
             if (build is not null && !build.Equals("Release", StringComparison.OrdinalIgnoreCase)) continue;
             var x64 = Child(Child(entry, "win"), "x64");
+            var etag = Text(x64, "etag");
+            var sha256 = Text(x64, "sha256") is { Length: 64 } hash && hash.All(Uri.IsHexDigit) ? hash.ToLowerInvariant() : null;
             var links = new[] { Text(x64, "official"), x64.ValueKind == JsonValueKind.String ? x64.GetString() : Text(x64, "url"),
-                    Text(x64, "mirror"), Text(Child(Child(entry, "links"), "win"), "x64") }
-                .Select(link => Uri.TryCreate(link, UriKind.Absolute, out var url) && IsCatalogDownload(url, full) ? url : null)
+                    Text(x64, "archive"), Text(x64, "mirror"), Text(Child(Child(entry, "links"), "win"), "x64") }
+                .Select(link => Uri.TryCreate(link, UriKind.Absolute, out var url) ? url : null)
                 .Where(url => url is not null).Distinct().ToList();
-            var official = links.FirstOrDefault(url => IsOfficial(url!));
+            // The permanent URL serves whatever build is current; without the ETag the feed saw, it cannot be pinned to this one.
+            var permanent = etag is null ? null : links.FirstOrDefault(url => url == Sources.LatestSpotify);
+            var official = permanent ?? links.FirstOrDefault(url => string.Equals(VersionFromOfficial(url!), full, StringComparison.OrdinalIgnoreCase));
+            var archive = links.FirstOrDefault(url => IsArchive(url!, full));
             var mirror = links.FirstOrDefault(url => IsMirror(url!, full));
-            if (official is null && mirror is null) continue;
+            if (official is null && archive is null && mirror is null) continue;
             // Spotify expires its versioned links, so a build known only by such a link still gets
             // the mirror's stable filename as a fallback; a missing mirror file fails like any 404.
             mirror ??= SpotifyVersions.MirrorFor(full);
@@ -142,7 +169,9 @@ public static partial class SpotifyVersions
             long size = sizeElement.ValueKind == JsonValueKind.Number && sizeElement.TryGetInt64(out var bytes) ? Math.Max(0, bytes) : 0;
             var date = Text(x64, "date");
             if (date is not null && !DateTime.TryParseExact(date, "dd.MM.yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out _)) date = null;
-            releases.Add(new(full, official ?? mirror!, date, size, number == testedVersion, official is null ? null : mirror));
+            var primary = official ?? archive ?? mirror;
+            releases.Add(new(full, primary, date, size, number == testedVersion, primary == mirror ? null : mirror, Archive: primary == archive ? null : archive,
+                Sha256: sha256, ETag: primary == permanent ? etag : null));
         }
         releases.Sort((a, b) => Parse(b.FullVersion!).CompareTo(Parse(a.FullVersion!)));
         SpotifyChoice[] choices = [SpotifyChoice.Latest, .. releases];

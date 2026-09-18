@@ -3,7 +3,7 @@ import { filterCatalog, selectSource, formatSize, platformNames } from './catalo
 const find = id => document.getElementById(id);
 const controls = { query: find('search'), architecture: find('architecture'), source: find('source'), sort: find('sort') };
 const tabs = [...document.querySelectorAll('[data-platform]')];
-const allowed = { platform: ['all', 'windows', 'macos', 'linux'], architecture: ['all', 'x64', 'x86', 'arm64'], source: ['all', 'official', 'mirror'], sort: ['newest', 'oldest'] };
+const allowed = { platform: ['all', 'windows', 'macos', 'linux'], architecture: ['all', 'x64', 'x86', 'arm64'], source: ['all', 'official', 'archive', 'mirror'], sort: ['newest', 'oldest'] };
 const params = new URLSearchParams(location.search);
 const state = { query: params.get('q')?.slice(0, 100) ?? '', platform: 'windows', architecture: 'all', source: 'all', sort: 'newest' };
 for (const key of Object.keys(allowed)) if (allowed[key].includes(params.get(key))) state[key] = params.get(key);
@@ -15,6 +15,11 @@ function element(tag, text, className) {
   if (text) node.textContent = text;
   if (className) node.className = className;
   return node;
+}
+function sourceNote(source) {
+  if (source.kind === 'archive') return 'Copied from Spotify by CI · hash listed';
+  if (source.kind === 'mirror') return 'Community hosted';
+  return source.label === 'Spotify CDN' ? 'Archived link · may expire' : 'Direct download';
 }
 function row(entry) {
   const tr = element('tr');
@@ -28,10 +33,11 @@ function row(entry) {
   date.append(element('span', entry.date ?? 'Not listed'), element('small', formatSize(entry.size)));
   const source = selectSource(entry, state.source);
   const sourceCell = element('td');
-  sourceCell.append(element('span', source.label, `source-label ${source.kind}`), element('small', source.kind === 'official' && source.label === 'Spotify CDN' ? 'Archived link · may expire' : source.kind === 'official' ? 'Direct download' : 'Community hosted'));
+  sourceCell.append(element('span', source.label, `source-label ${source.kind}`), element('small', sourceNote(source)));
   const action = element('td', null, 'row-action');
   const download = element('a', 'Download ↗', 'download-link');
   download.href = source.url;
+  if (entry.sha256) download.title = `SHA-256 ${entry.sha256}`;
   download.setAttribute('aria-label', `Download Spotify ${entry.fullVersion} for ${platformNames[entry.platform]} ${entry.architecture} from ${source.label}`);
   action.append(download);
   tr.append(version, platform, date, sourceCell, action);

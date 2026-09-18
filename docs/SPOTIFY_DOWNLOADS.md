@@ -15,6 +15,21 @@ These links are unsigned, stable and always point at the newest build. On 2026-0
 answered `200`, `Content-Length: 148153000`, `Last-Modified: Thu, 17 Sep 2026 15:26:53 GMT`. The
 app exposes this as **Latest official Spotify**.
 
+Three more observations (2026-09-18) shape the release watcher below:
+
+- All permanent URLs (`SpotifyFullSetupX64.exe`, `SpotifyFullSetupARM64.exe`, `SpotifySetup.exe`,
+  both DMGs) rotated within the same minute, 15:26 UTC on 2026-09-17, i.e. at the moment the
+  update service started offering 1.3.1.234. `SpotifyFullSetup.exe` (x86) has not moved since
+  2026-02-22 and still serves 1.2.53.440; Spotify stopped shipping x86 there.
+- The file behind `SpotifyFullSetupX64.exe` is byte-identical to the upgrade package the update
+  service hands out for the same build: the LoadSpot copy `spotify_installer-1.3.1.234.g59d6bf59-x64.exe`
+  and the permanent URL both hashed to SHA-256 `6c25d92dd38ddbfc1e4970765e865766d8ae2ef1758c6af8e9122c5050ee66dc`
+  (ProductVersion `1.3.1.234.g59d6bf59`, Authenticode `O=Spotify AB`). "Full setup" and "upgrade
+  installer" are one file.
+- The permanent URLs are S3-backed (`x-amz-checksum-crc32c`, `ETag`) and honour `If-Match`: a
+  stale ETag answers `412 Precondition Failed`, a current one `200`/`206`. A download can therefore be
+  pinned to the build it was catalogued as, without any authentication.
+
 ## Versioned Windows installers are handed out by the client update service, signed and short-lived
 
 The desktop client does not poll a public list. It calls
@@ -52,19 +67,52 @@ Consequences observed:
   `https://loadspot.amd64fox1.workers.dev/download/spotify_installer-<full version>-x64.exe`
   (Cloudflare, `200`, no redirect, `content-disposition` with the stable filename).
 
+## The release watcher: two sensors, one record per build
+
+`site/scripts/watch-official.mjs` runs every 30 minutes from `.github/workflows/watch-spotify.yml`
+(Spotify's own clients poll every ~4 h, `poll_interval` 14288 s in the capture) and keeps
+`site/data/official.json`, which the Pages build overlays on the catalog (`applyOfficial`).
+
+1. **Permanent-URL sensor, no account.** `HEAD` on the six URLs above; a changed `ETag` on a
+   Windows EXE means a new build. The file is downloaded from Spotify with `If-Match`, its PE
+   `ProductVersion`, machine type, SHA-256 and SHA-1 are read from the bytes, and the build is
+   recorded with the ETag, size and `Last-Modified`. When the `SPOTIFY_ARCHIVE_TAG` repository
+   variable is set (or the workflow input is ticked), the file is attached to that GitHub release as
+   `spotify_installer-<version>-<arch>.exe`, so older builds keep a copy that this repository's CI
+   took from Spotify, with its hash logged in the run and in `official.json`.
+2. **Update-service sensor, optional.** `site/scripts/probe-update-service.py` asks
+   `desktop-update/v2/update` for each platform the way the client does, using a stored Spotify
+   session (librespot-python, OAuth once: `python3 site/scripts/probe-update-service.py --login`,
+   then the `credentials.json` goes into the `SPOTIFY_CREDENTIALS` secret). It decodes the
+   protobuf without a dependency and reports the offered version, `http_prefix`, the signed URL and
+   Spotify's own `binary_hash`. Without the secret the step is skipped and sensor 1 works alone.
+3. **Reconciliation.** Records are keyed by SHA-256, so a build seen by both sensors is one record
+   with `sensors: ["permanent-url", "update-service"]`. A build gets `verified: "binary_hash"` when
+   Spotify's hash equals the SHA-256 or SHA-1 of the downloaded file (the algorithm behind
+   `binary_hash` is not documented; both are kept), and `conflict` when it matches neither — a
+   conflict is printed in the run and never marks the build verified. A build the service offers but
+   the permanent URL has not shown yet is downloaded from the signed link while it is valid and
+   recorded with `sensors: ["update-service"]`.
+
+What the catalog and the app get from this: `sha256` per observed build, the permanent URL with
+its ETag while the build is current, the archive copy when one exists, and Spotify's `http_prefix`.
+
 ## What the installer does with this
 
 1. **Latest official Spotify** downloads straight from `download.scdn.co`.
-2. A versioned build keeps Spotify's `upgrade.scdn.co` link, when one was ever published, as the
-   first attempt and the LoadSpot filename as the fallback. A failed request on the first link
-   (403 today) moves on to the mirror and is logged as *Switching source*; a size or executable
-   mismatch does not fall back.
+2. A versioned build is tried in this order: Spotify's permanent URL with `If-Match` on the ETag the
+   watcher recorded (only while that build is current; 412 once it rotates), else Spotify's
+   `upgrade.scdn.co` link when one was ever published (403 once expired), then the CI archive copy,
+   then the LoadSpot filename. A failed request moves on and is logged as *Switching source*; a
+   SHA-256, size or executable mismatch does not fall back.
 3. A typed full version (`1.2.80.699.gd5f6ebe3`) or a link on either host becomes a choice through
    `SpotifyVersions.TryCustom`; a link on any other host is rejected.
-4. Every downloaded setup must carry a valid Authenticode signature from `O=Spotify AB` or
-   `O=Spotify USA Inc.` (`WindowsSpotifyPlatform.VerifySpotifyPublisherAsync`) before it runs, and
-   the installed version must equal the selected one afterwards. That check, not the hostname, is
-   what ties a mirror download to Spotify's own bytes.
+4. When the feed carries a `sha256` (every build the watcher observed, plus the pinned tested build),
+   the whole download is hashed and a mismatch is rejected before anything runs. Every setup must
+   then carry a valid Authenticode signature from `O=Spotify AB` or `O=Spotify USA Inc.`
+   (`WindowsSpotifyPlatform.VerifySpotifyPublisherAsync`), and the installed version must equal the
+   selected one afterwards. Those checks, not the hostname, tie a mirror or archive download to
+   Spotify's own bytes.
 
 Re-check with:
 
@@ -74,5 +122,5 @@ curl -sI https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1
 curl -sI https://loadspot.amd64fox1.workers.dev/download/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe | head -1
 ```
 
-Obtaining a fresh signed link would require a logged-in Spotify session token inside the
-installer; that was left out deliberately.
+A signed link is only ever obtained by the watcher's optional second sensor in CI; the installer
+itself never holds a Spotify session.

@@ -107,28 +107,29 @@ public sealed class InstallerService(Downloads downloads, ISpotifyPlatform platf
         }
     }
 
-    // Spotify's own link is tried first. Its versioned links are signed and expire (HTTP 403),
-    // so a failed request moves on to the mirror instead of failing the installation. Size and
-    // executable checks are not retried elsewhere: a mismatched file is suspicious, not missing.
+    // Spotify's own link is tried first (its permanent URL with If-Match, or a versioned link that
+    // Spotify has usually expired with HTTP 403), then the CI archive copy, then the LoadSpot mirror.
+    // A failed request moves on; a SHA-256, size or executable mismatch does not, because a wrong
+    // file is suspicious rather than missing.
     private async Task DownloadSpotifyAsync(SpotifyChoice choice, string target, IProgress<InstallProgress> progress, CancellationToken token)
     {
         var urls = choice.Urls.ToList();
         for (var index = 0; index < urls.Count; index++)
         {
             var url = urls[index];
-            var origin = SpotifyVersions.IsOfficial(url) ? "Spotify" : "LoadSpot mirror";
+            var origin = SpotifyChoice.SourceOf(url);
             var transfer = new InlineProgress<TransferProgress>(p =>
                 progress.Report(new("Downloading Spotify", $"{p.Label} · {origin}", 20 + p.Percent * .4)));
             progress.Report(new("Downloading Spotify", $"Connecting to {url.Host}", 20));
             try
             {
-                await downloads.FileAsync(url, target, choice.Size, false, transfer, token);
+                await downloads.FileAsync(url, target, choice.Size, false, transfer, token, choice.Sha256, url == Sources.LatestSpotify ? choice.ETag : null);
                 return;
             }
             catch (HttpRequestException error) when (index < urls.Count - 1)
             {
                 var reason = error.StatusCode is { } code ? $"HTTP {(int)code}" : "connection failed";
-                progress.Report(new("Switching source", $"{origin} did not serve this version ({reason}). Trying the mirror.", 20));
+                progress.Report(new("Switching source", $"{origin} did not serve this version ({reason}). Trying {SpotifyChoice.SourceOf(urls[index + 1])}.", 20));
             }
         }
     }

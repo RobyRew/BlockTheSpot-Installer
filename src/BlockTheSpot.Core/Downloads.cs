@@ -1,6 +1,8 @@
 using System.Buffers;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
 
 namespace BlockTheSpot.Core;
 
@@ -28,16 +30,19 @@ public sealed class Downloads(HttpClient client)
         return await response.Content.ReadAsStringAsync(timeout.Token);
     }
 
+    /// <param name="sha256">Expected hash of the whole file; a mismatch rejects the file after the transfer.</param>
+    /// <param name="etag">Sent as If-Match so a permanent URL that has moved to a newer build answers 412 instead of a wrong file.</param>
     public async Task FileAsync(Uri uri, string target, long expectedSize, bool requireX64Dll,
-        IProgress<TransferProgress>? progress, CancellationToken token)
+        IProgress<TransferProgress>? progress, CancellationToken token, string? sha256 = null, string? etag = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromMinutes(10));
         var cancellation = timeout.Token;
         var temporary = target + "." + Guid.NewGuid().ToString("N") + ".download";
+        using var hash = sha256 is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         try
         {
-            using var response = await SendAsync(uri, cancellation);
+            using var response = await SendAsync(uri, cancellation, etag);
             if (response.StatusCode != HttpStatusCode.OK)
                 throw new HttpRequestException($"Expected a complete file from {uri.Host}; received HTTP {(int)response.StatusCode}.");
             var total = response.Content.Headers.ContentLength;
@@ -56,6 +61,7 @@ public sealed class Downloads(HttpClient client)
                     while ((count = await input.ReadAsync(buffer, cancellation)) > 0)
                     {
                         await output.WriteAsync(buffer.AsMemory(0, count), cancellation);
+                        hash?.AppendData(buffer, 0, count);
                         written += count;
                         if (Environment.TickCount64 - lastReport > 100)
                         {
@@ -69,6 +75,8 @@ public sealed class Downloads(HttpClient client)
                 }
                 finally { ArrayPool<byte>.Shared.Return(buffer); }
             }
+            if (hash is not null && !string.Equals(Convert.ToHexString(hash.GetHashAndReset()), sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("The download does not match the SHA-256 checksum recorded from Spotify's servers. Refresh versions and try again.");
             ValidatePortableExecutable(temporary, requireX64Dll);
             cancellation.ThrowIfCancellationRequested();
             File.Move(temporary, target, true);
@@ -88,12 +96,14 @@ public sealed class Downloads(HttpClient client)
             throw new InvalidDataException("The downloaded patch is not a Windows x64 DLL.");
     }
 
-    private async Task<HttpResponseMessage> SendAsync(Uri uri, CancellationToken token)
+    private async Task<HttpResponseMessage> SendAsync(Uri uri, CancellationToken token, string? etag = null)
     {
         for (var attempt = 0; ; attempt++)
         {
             HttpResponseMessage response;
-            try { response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, token); }
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            if (etag is not null && EntityTagHeaderValue.TryParse(etag, out var tag)) request.Headers.IfMatch.Add(tag);
+            try { response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token); }
             catch (HttpRequestException) when (attempt < 2)
             {
                 await Task.Delay(TimeSpan.FromSeconds(attempt + 1), token);
@@ -109,6 +119,8 @@ public sealed class Downloads(HttpClient client)
             {
                 var code = response.StatusCode;
                 response.Dispose();
+                if (code == HttpStatusCode.PreconditionFailed)
+                    throw new HttpRequestException($"{uri.Host} now serves a newer build at this address (HTTP 412). Refresh versions to see it.", null, code);
                 var action = code is HttpStatusCode.NotFound or HttpStatusCode.Gone or HttpStatusCode.Forbidden
                     ? " Refresh versions or choose the latest official Spotify installer." : " Please try again.";
                 throw new HttpRequestException($"Download unavailable from {uri.Host} (HTTP {(int)code}).{action}", null, code);

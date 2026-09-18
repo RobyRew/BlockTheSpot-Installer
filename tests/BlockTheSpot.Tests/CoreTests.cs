@@ -68,8 +68,53 @@ public sealed class CatalogTests
         Assert.Equal("upgrade.scdn.co", choice.Url.Host);
         Assert.Equal("loadspot.amd64fox1.workers.dev", choice.Mirror!.Host);
         Assert.Equal(2, choice.Urls.Count());
-        Assert.Equal("Spotify · mirror fallback", choice.Source);
+        Assert.Equal("Spotify", choice.Source);
         Assert.Equal("12.05.2026", choice.Date);
+    }
+
+    [Fact]
+    public void WatcherFieldsPinThePermanentLinkByETagAndAddTheArchiveAndHash()
+    {
+        const string permanent = "https://download.scdn.co/SpotifyFullSetupX64.exe";
+        const string archive = "https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe";
+        var json = "{\"1.3.1.234\":{\"fullversion\":\"1.3.1.234.g59d6bf59\",\"win\":{\"x64\":{\"url\":\"" + permanent + "\",\"etag\":\"\\\"b67d\\\"\",\"archive\":\"" + archive +
+            "\",\"sha256\":\"6C25D92DD38DDBFC1E4970765E865766D8AE2EF1758C6AF8E9122C5050EE66DC\",\"date\":\"17.09.2026\",\"size\":148153000}}}}";
+        var choice = SpotifyVersions.Read(json, "1.2.93.667").Choices[1];
+        Assert.Equal(Sources.LatestSpotify, choice.Url);
+        Assert.Equal("\"b67d\"", choice.ETag);
+        Assert.Equal(archive, choice.Archive!.AbsoluteUri);
+        Assert.Equal("6c25d92dd38ddbfc1e4970765e865766d8ae2ef1758c6af8e9122c5050ee66dc", choice.Sha256);
+        Assert.Equal(["download.scdn.co", "github.com", "loadspot.amd64fox1.workers.dev"], choice.Urls.Select(u => u.Host));
+        Assert.Equal("Spotify", choice.Source);
+        Assert.Contains("SHA-256", choice.Detail);
+        Assert.True(choice.Recommended == false);
+    }
+
+    [Fact]
+    public void PermanentLinkWithoutAnETagIsNotPinnedToAVersion()
+    {
+        var json = """{"1.3.1.234":{"fullversion":"1.3.1.234.g59d6bf59","win":{"x64":{"url":"https://download.scdn.co/SpotifyFullSetupX64.exe","size":1}}}}""";
+        var result = SpotifyVersions.Read(json, "1.2.93.667");
+        Assert.Single(result.Choices);
+        var withArchive = SpotifyVersions.Read("""{"1.3.1.234":{"fullversion":"1.3.1.234.g59d6bf59","win":{"x64":{"url":"https://download.scdn.co/SpotifyFullSetupX64.exe","archive":"https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe","sha256":"bad"}}}}""", "1.2.93.667").Choices[1];
+        Assert.Equal("github.com", withArchive.Url.Host);
+        Assert.Null(withArchive.ETag);
+        Assert.Null(withArchive.Sha256);
+        Assert.Equal("GitHub archive", withArchive.Source);
+    }
+
+    [Theory]
+    [InlineData("https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe", "1.3.1.234.g59d6bf59")]
+    [InlineData("https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/v9/spotify_installer-1.3.1.235.g59d6bf59-x64.exe", "1.3.1.235.g59d6bf59")]
+    [InlineData("https://github.com/Someone/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe", null)]
+    [InlineData("https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-arm64.exe", null)]
+    [InlineData("http://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe", null)]
+    public void ArchiveLinksMustNameThisRepositoryAndTheExactBuild(string url, string? version)
+    {
+        Assert.Equal(version == "1.3.1.234.g59d6bf59", SpotifyVersions.IsArchive(new(url), "1.3.1.234.g59d6bf59"));
+        var custom = SpotifyVersions.TryCustom(url);
+        Assert.Equal(version, custom?.FullVersion);
+        if (custom is not null) Assert.Equal(["github.com", "loadspot.amd64fox1.workers.dev"], custom.Urls.Select(u => u.Host));
     }
 
     [Theory]
@@ -173,6 +218,38 @@ public sealed class DownloadTests
         await new Downloads(client).FileAsync(Sources.LatestSpotify, target, payload.Length, false, null, CancellationToken.None);
         Assert.Equal(payload, File.ReadAllBytes(target));
         Assert.Single(Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public async Task ChecksumIsVerifiedOverTheWholeStreamAndSentWithIfMatch()
+    {
+        using var directory = new TemporaryDirectory();
+        var payload = Response.Executable();
+        var expected = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        string? ifMatch = null;
+        var handler = new FakeHandler(_ => Response.Binary(payload)) { Inspect = request => ifMatch = request.Headers.IfMatch.ToString() };
+        using var client = new HttpClient(handler);
+        var target = Path.Combine(directory.Path, "setup.exe");
+        await new Downloads(client).FileAsync(Sources.LatestSpotify, target, 0, false, null, CancellationToken.None, expected, "\"b67d\"");
+        Assert.Equal("\"b67d\"", ifMatch);
+        Assert.True(File.Exists(target));
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() =>
+            new Downloads(client).FileAsync(Sources.LatestSpotify, Path.Combine(directory.Path, "other.exe"), 0, false, null, CancellationToken.None, new string('0', 64)));
+        Assert.Contains("SHA-256", error.Message);
+        Assert.Single(Directory.GetFiles(directory.Path));
+    }
+
+    [Fact]
+    public async Task ARotatedPermanentLinkAnswers412AndIsReportedAsANewerBuild()
+    {
+        using var directory = new TemporaryDirectory();
+        var handler = new FakeHandler(_ => new(HttpStatusCode.PreconditionFailed));
+        using var client = new HttpClient(handler);
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            new Downloads(client).FileAsync(Sources.LatestSpotify, Path.Combine(directory.Path, "setup.exe"), 0, false, null, CancellationToken.None, null, "\"old\""));
+        Assert.Equal(HttpStatusCode.PreconditionFailed, error.StatusCode);
+        Assert.Contains("newer build", error.Message);
+        Assert.Single(handler.Requests);
     }
 
     [Theory]
@@ -327,8 +404,9 @@ public sealed class InstallerTests
         using var directory = new TemporaryDirectory();
         var platform = new FakePlatform(directory.Path);
         using var client = Client();
+        // The pinned hash belongs to the real tested file; the fake payload is exempted here and pinned in its own test.
         await new InstallerService(new Downloads(client), platform).InstallAsync(
-            new(Compatibility.TestedChoice with { Size = 0 }, true, true, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None);
+            new(Compatibility.TestedChoice with { Size = 0, Sha256 = null }, true, true, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None);
         Assert.True(platform.Events.IndexOf("signature") < platform.Events.IndexOf("stop"));
         Assert.True(platform.Events.IndexOf("signature") < platform.Events.IndexOf("setup"));
         Assert.Contains("launch", platform.Events);
@@ -358,12 +436,40 @@ public sealed class InstallerTests
         using var client = new HttpClient(handler);
         var stages = new List<string>();
         await new InstallerService(new Downloads(client), platform).InstallAsync(
-            new(Compatibility.TestedChoice with { Url = official, Mirror = Compatibility.TestedChoice.Url, Size = 0 }, true, false, false),
+            new(Compatibility.TestedChoice with { Url = official, Mirror = Compatibility.TestedChoice.Url, Size = 0, Sha256 = null }, true, false, false),
             new InlineProgress<InstallProgress>(p => stages.Add(p.Stage + ": " + p.Detail)), CancellationToken.None);
         Assert.Contains(official, handler.Requests);
         Assert.Contains(Compatibility.TestedChoice.Url, handler.Requests);
         Assert.Contains(stages, s => s.StartsWith("Switching source: Spotify did not serve this version (HTTP 403)"));
         Assert.Contains("setup", platform.Events);
+    }
+
+    [Fact]
+    public async Task ARotatedPermanentLinkFallsBackToTheArchiveWhoseHashMustStillMatch()
+    {
+        using var directory = new TemporaryDirectory();
+        var platform = new FakePlatform(directory.Path);
+        var payload = Response.Executable();
+        var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload)).ToLowerInvariant();
+        var archive = new Uri("https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.2.93.667.g7b5cc0ce-x64.exe");
+        var handler = new FakeHandler(uri =>
+            uri == Sources.Config ? Response.Text(";1.2.93.667") :
+            uri == Sources.LatestSpotify ? new(HttpStatusCode.PreconditionFailed) : Response.Binary(payload));
+        using var client = new HttpClient(handler);
+        var stages = new List<string>();
+        var choice = Compatibility.TestedChoice with { Url = Sources.LatestSpotify, ETag = "\"old\"", Archive = archive, Mirror = Compatibility.TestedChoice.Url, Size = 0, Sha256 = sha256 };
+        await new InstallerService(new Downloads(client), platform).InstallAsync(
+            new(choice, true, false, false), new InlineProgress<InstallProgress>(p => stages.Add(p.Stage + ": " + p.Detail)), CancellationToken.None);
+        Assert.Equal([Sources.LatestSpotify, archive], handler.Requests.Where(u => u.Host != "github.com" || u == archive));
+        Assert.Contains(stages, s => s.StartsWith("Switching source: Spotify did not serve this version (HTTP 412). Trying GitHub archive."));
+        Assert.Contains("setup", platform.Events);
+
+        var tampered = new FakePlatform(directory.Path);
+        var wrong = choice with { Sha256 = new string('f', 64) };
+        await Assert.ThrowsAsync<InvalidDataException>(() => new InstallerService(new Downloads(client), tampered).InstallAsync(
+            new(wrong, true, false, false), new InlineProgress<InstallProgress>(_ => { }), CancellationToken.None));
+        Assert.DoesNotContain("setup", tampered.Events);
+        Assert.DoesNotContain(Compatibility.TestedChoice.Url, handler.Requests);
     }
 
     [Fact]
@@ -463,8 +569,9 @@ public sealed class InstallerTests
 internal sealed class FakeHandler(Func<Uri, HttpResponseMessage> respond) : HttpMessageHandler
 {
     public List<Uri> Requests { get; } = [];
+    public Action<HttpRequestMessage>? Inspect { get; init; }
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
-    { Requests.Add(request.RequestUri!); return Task.FromResult(respond(request.RequestUri!)); }
+    { Requests.Add(request.RequestUri!); Inspect?.Invoke(request); return Task.FromResult(respond(request.RequestUri!)); }
 }
 
 internal static class Response

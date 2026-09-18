@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
-import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions } from '../site/src/lib/catalog.mjs';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { TESTED_VERSION, normalizeCatalog, sourceFor, mergeCatalogs, parseLinuxPackages, filterCatalog, selectSource, windowsFeed, compareVersions, applyOfficial } from '../site/src/lib/catalog.mjs';
+import { WATCHED, inspectPortableExecutable, capture, applyObservations, reconcileUpdateService, runProbe, archive, ensureRelease } from '../site/scripts/watch-official.mjs';
 const catalog = JSON.parse(await readFile(new URL('../site/data/catalog.json', import.meta.url), 'utf8'));
+const official = JSON.parse(await readFile(new URL('../site/data/official.json', import.meta.url), 'utf8'));
 const fixture = JSON.parse(await readFile(new URL('../testdata/loadspot_versions.json', import.meta.url), 'utf8'));
 const entries = normalizeCatalog(fixture);
 const html = await readFile(new URL('../site/src/pages/index.astro', import.meta.url), 'utf8');
@@ -97,6 +103,12 @@ test('Installer feed lists every Windows x64 build with the mirror as url and Sp
   assert.ok(withOfficial > 100);
   const fixtureFeed = windowsFeed(entries);
   assert.deepEqual(Object.keys(fixtureFeed['1.2.85.519'].win.x64).sort(), ['date', 'size', 'url']);
+  const live = windowsFeed(applyOfficial(catalog.entries, official));
+  const current = official.builds.find(build => build.architecture === 'x64' && build.etag === official.watched['windows-x64'].etag);
+  const entry = live[current.fullVersion.split('.').slice(0, 4).join('.')].win.x64;
+  assert.equal(entry.sha256, current.sha256);
+  assert.equal(entry.etag, current.etag);
+  assert.ok([entry.url, entry.official].includes('https://download.scdn.co/SpotifyFullSetupX64.exe'));
 });
 test('Snapshot refresh is idempotent: unchanged metadata does not cause another deployment', () => {
   const merged = mergeCatalogs(catalog.entries, catalog.entries);
@@ -113,13 +125,156 @@ test('Official latest links and release link are explicit, with accessible page 
   assert.ok(html.includes('Official Spotify only'));
   assert.ok(html.includes('Older official CDN links may have expired'));
 });
+
+// --- release watcher -------------------------------------------------------------------------------
+
+function syntheticInstaller(version, machine = 0x8664) {
+  const buffer = Buffer.alloc(4096);
+  buffer.write('MZ', 0, 'latin1');
+  buffer.writeUInt32LE(0x80, 0x3C);
+  buffer.writeUInt32LE(0x00004550, 0x80);
+  buffer.writeUInt16LE(machine, 0x84);
+  const key = Buffer.from('ProductVersion\0', 'utf16le');
+  key.copy(buffer, 0x800);
+  Buffer.from('\0' + version + '\0', 'utf16le').copy(buffer, 0x800 + key.length);
+  return buffer;
+}
+const sha = (algorithm, buffer) => createHash(algorithm).update(buffer).digest('hex');
+
+test('Watcher reads machine and ProductVersion from a PE image and rejects other files', () => {
+  assert.deepEqual(inspectPortableExecutable(syntheticInstaller('1.3.1.234.g59d6bf59')), { machine: 0x8664, productVersion: '1.3.1.234.g59d6bf59' });
+  assert.equal(inspectPortableExecutable(syntheticInstaller('1.2.53.440.g7b2f582a', 0x14c)).machine, 0x14c);
+  assert.throws(() => inspectPortableExecutable(Buffer.from('not an exe')), /Not a Windows executable/);
+  assert.throws(() => inspectPortableExecutable(syntheticInstaller('2.0.0.1')), /Unexpected ProductVersion/);
+  assert.deepEqual(WATCHED.filter(w => w.machine).map(w => w.architecture), ['x64', 'arm64', 'x86']);
+});
+
+test('Watcher downloads with If-Match, hashes the file and refuses a build that does not match the claim', async () => {
+  const image = syntheticInstaller('1.3.1.234.g59d6bf59');
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, ifMatch: options.headers['If-Match'] ?? null });
+    return new Response(image, { status: 200, headers: { etag: '"abc"', 'content-length': String(image.length), 'last-modified': 'Thu, 17 Sep 2026 15:26:53 GMT' } });
+  };
+  const directory = await mkdtemp(join(tmpdir(), 'watch-test-'));
+  try {
+    const target = WATCHED[0];
+    const file = await capture(target, { etag: '"abc"', size: image.length }, directory, fetchImpl);
+    assert.deepEqual(requests, [{ url: target.url, ifMatch: '"abc"' }]);
+    assert.equal(file.sha256, sha('sha256', image));
+    assert.equal(file.sha1, sha('sha1', image));
+    assert.equal(file.fullVersion, '1.3.1.234.g59d6bf59');
+    assert.equal(file.name, 'spotify_installer-1.3.1.234.g59d6bf59-x64.exe');
+    assert.equal(file.lastModified, '2026-09-17T15:26:53.000Z');
+    await assert.rejects(capture(target, { url: 'https://upgrade.scdn.co/x', expectVersion: '1.3.1.235.g00000000' }, directory, fetchImpl), /is 1\.3\.1\.234\.g59d6bf59, not/);
+    await assert.rejects(capture(target, { etag: '"abc"', size: 10 }, directory, fetchImpl), /received .* of 10 bytes/);
+    await assert.rejects(capture(WATCHED[1], { etag: '"abc"' }, directory, fetchImpl), /is not arm64/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Observations merge by hash, keep the first capture date and union the sensors', () => {
+  const t0 = '2026-09-17T16:00:00.000Z', t1 = '2026-09-18T04:00:00.000Z';
+  const build = { fullVersion: '1.3.1.234.g59d6bf59', platform: 'windows', architecture: 'x64', sha256: 'a'.repeat(64), sha1: 'b'.repeat(40), size: 10, lastModified: '2026-09-17T15:26:53.000Z', capturedAt: t0, url: WATCHED[0].url, etag: '"e1"', sensors: ['permanent-url'] };
+  const first = applyObservations(null, { 'windows-x64': { etag: '"e1"', size: 10, lastModified: build.lastModified } }, [build], t0);
+  assert.equal(first.watched['windows-x64'].changedAt, t0);
+  const again = applyObservations(first, { 'windows-x64': { etag: '"e1"', size: 10, lastModified: build.lastModified } }, [{ ...build, capturedAt: t1, sensors: ['update-service'] }], t1);
+  assert.equal(again.builds.length, 1);
+  assert.equal(again.builds[0].capturedAt, t0);
+  assert.deepEqual(again.builds[0].sensors, ['permanent-url', 'update-service']);
+  assert.equal(again.watched['windows-x64'].changedAt, t0, 'an unchanged ETag keeps its original change date');
+  const rotated = applyObservations(again, { 'windows-x64': { etag: '"e2"', size: 11, lastModified: '2026-09-20T00:00:00.000Z' } }, [{ ...build, sha256: 'c'.repeat(64), fullVersion: '1.3.2.100.g11111111', etag: '"e2"', lastModified: '2026-09-20T00:00:00.000Z' }], '2026-09-20T01:00:00.000Z');
+  assert.equal(rotated.builds.length, 2);
+  assert.equal(rotated.builds[0].fullVersion, '1.3.2.100.g11111111', 'newest build first');
+  assert.equal(rotated.watched['windows-x64'].changedAt, '2026-09-20T01:00:00.000Z');
+});
+
+test('Update-service offers verify a captured build by hash, flag a conflict, and list unseen builds', () => {
+  const state = { schemaVersion: 1, watched: {}, builds: [
+    { fullVersion: '1.3.1.234.g59d6bf59', platform: 'windows', architecture: 'x64', sha256: 'a'.repeat(64), sha1: 'b'.repeat(40), url: WATCHED[0].url, sensors: ['permanent-url'] },
+    { fullVersion: '1.3.1.234.g59d6bf59', platform: 'windows', architecture: 'arm64', sha256: 'c'.repeat(64), sha1: 'd'.repeat(40), url: WATCHED[1].url, sensors: ['permanent-url'] },
+  ] };
+  const probe = { claim: '1.2.0.0', results: {
+    Win32_x86_64: { fullVersion: '1.3.1.234.g59d6bf59', os: 'windows', architecture: 'x64', httpPrefix: 'https://upgrade.scdn.co/upgrade/client/win32-x86_64/spotify_installer-1.3.1.234.g59d6bf59-77.exe', url: 'https://upgrade.scdn.co/x?fauth=1', binaryHash: 'B'.repeat(40), targetVersion: 1, upgradeType: 2, pollInterval: 14288 },
+    Win32_ARM64: { fullVersion: '1.3.1.234.g59d6bf59', os: 'windows', architecture: 'arm64', httpPrefix: 'https://upgrade.scdn.co/upgrade/client/win32-arm64/spotify_installer-1.3.1.234.g59d6bf59-77.exe', url: 'https://upgrade.scdn.co/y?fauth=1', binaryHash: 'e'.repeat(64), targetVersion: 1 },
+    OSX_ARM64: { fullVersion: '1.3.1.234.g59d6bf59', os: 'macos', architecture: 'arm64', httpPrefix: 'https://upgrade.scdn.co/upgrade/client/osx-arm64/spotify-autoupdate-1.3.1.234.g59d6bf59-77.tbz', url: 'https://upgrade.scdn.co/z?fauth=1', binaryHash: 'f'.repeat(64) },
+    OSX: { upToDate: true },
+  } };
+  const missing = reconcileUpdateService(state, probe, '2026-09-18T05:00:00.000Z');
+  assert.deepEqual(missing, []);
+  assert.equal(state.builds[0].verified, 'binary_hash', 'a SHA-1 binary_hash verifies against sha1, case-insensitively');
+  assert.deepEqual(state.builds[0].sensors, ['permanent-url', 'update-service']);
+  assert.match(state.builds[1].conflict, /matches neither/);
+  assert.equal(state.updateService.offers.OSX_ARM64.fullVersion, '1.3.1.234.g59d6bf59');
+  assert.equal(state.updateService.offers.OSX, undefined);
+  const newer = { claim: '1.2.0.0', results: { Win32_x86_64: { ...probe.results.Win32_x86_64, fullVersion: '1.3.2.100.g11111111' } } };
+  const unseen = reconcileUpdateService(state, newer, '2026-09-19T05:00:00.000Z');
+  assert.equal(unseen.length, 1);
+  assert.equal(unseen[0].fullVersion, '1.3.2.100.g11111111');
+  assert.equal(state.updateService.offers.Win32_x86_64.seenAt, '2026-09-19T05:00:00.000Z', 'a changed offer refreshes its seen date');
+  assert.equal(state.updateService.offers.OSX_ARM64.seenAt, '2026-09-18T05:00:00.000Z', 'an offer that is no longer reported keeps its record');
+});
+
+test('The probe is skipped without credentials and its output is parsed when present', () => {
+  assert.equal(runProbe({ env: {} }), null);
+  const skipped = runProbe({ env: { SPOTIFY_CREDENTIALS: '{}' }, run: () => ({ status: 0, stdout: '{"skipped":true,"reason":"librespot is not installed"}' }) });
+  assert.equal(skipped, null);
+  const failed = runProbe({ env: { SPOTIFY_CREDENTIALS_FILE: 'x' }, run: () => ({ status: 1, stderr: 'boom' }) });
+  assert.equal(failed, null);
+  let command;
+  const parsed = runProbe({ env: { SPOTIFY_CREDENTIALS: '{}' }, run: (cmd, args) => { command = [cmd, ...args]; return { status: 0, stdout: '{"claim":"1.2.0.0","results":{}}' }; } });
+  assert.deepEqual(parsed, { claim: '1.2.0.0', results: {} });
+  assert.equal(command[0], 'python3');
+  assert.match(command[1], /probe-update-service\.py$/);
+});
+
+test('Archiving is off without a tag and uploads under the stable asset name with it', () => {
+  const file = { path: '/tmp/x.exe', name: 'spotify_installer-1.3.1.234.g59d6bf59-x64.exe' };
+  assert.equal(archive(file, '', 'RobyRew/BlockTheSpot-Installer'), null);
+  const calls = [];
+  const run = (cmd, args) => { calls.push([cmd, ...args]); return { status: args[1] === 'view' ? 1 : 0 }; };
+  ensureRelease('spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run });
+  const url = archive(file, 'spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run });
+  assert.equal(url, 'https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.3.1.234.g59d6bf59-x64.exe');
+  assert.deepEqual(calls.map(c => c.slice(0, 3)), [['gh', 'release', 'view'], ['gh', 'release', 'create'], ['gh', 'release', 'upload']]);
+  assert.ok(calls[2].includes('/tmp/x.exe#spotify_installer-1.3.1.234.g59d6bf59-x64.exe'));
+  assert.equal(sourceFor(url, '1.3.1.234.g59d6bf59', 'windows', 'x64').kind, 'archive');
+  assert.throws(() => archive(file, 'spotify-installers', 'RobyRew/BlockTheSpot-Installer', { run: () => ({ status: 2 }) }), /exited with 2/);
+});
+
+test('applyOfficial overlays hashes, the current permanent link and archive copies without persisting them', () => {
+  const build = { fullVersion: '1.2.85.519.g549a528b', platform: 'windows', architecture: 'x64', sha256: 'a'.repeat(64), sha1: 'b'.repeat(40), size: 127874744,
+    lastModified: '2026-03-13T10:00:00.000Z', url: 'https://download.scdn.co/SpotifyFullSetupX64.exe', etag: '"old"', archive: 'https://github.com/RobyRew/BlockTheSpot-Installer/releases/download/spotify-installers/spotify_installer-1.2.85.519.g549a528b-x64.exe' };
+  const stale = applyOfficial(entries, { watched: { 'windows-x64': { etag: '"new"' } }, builds: [build] });
+  const entry = stale.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
+  assert.equal(entry.sha256, 'a'.repeat(64));
+  assert.deepEqual(entry.sources.map(s => s.label).sort(), ['GitHub archive', 'LoadSpot mirror'], 'a permanent link is not attached once the ETag moved on');
+  assert.equal(selectSource(entry).label, 'GitHub archive');
+  const live = applyOfficial(entries, { watched: { 'windows-x64': { etag: '"old"' } }, builds: [build] });
+  const current = live.find(e => e.id === '1.2.85.519.g549a528b-windows-x64');
+  assert.equal(selectSource(current).label, 'Spotify (current build)');
+  assert.equal(selectSource(current).etag, '"old"');
+  const feed = windowsFeed(live)['1.2.85.519'].win.x64;
+  assert.equal(feed.official, 'https://download.scdn.co/SpotifyFullSetupX64.exe');
+  assert.equal(feed.etag, '"old"');
+  assert.equal(feed.archive, build.archive);
+  assert.equal(feed.sha256, build.sha256);
+  assert.ok(feed.url.includes('loadspot'), 'the mirror stays the compatibility url');
+  const fresh = applyOfficial(entries, { watched: {}, builds: [{ ...build, fullVersion: '1.3.9.1.gabcdef12', archive: undefined, etag: '"x"' }] });
+  const added = fresh.find(e => e.id === '1.3.9.1.gabcdef12-windows-x64');
+  assert.equal(added.date, '2026-03-13');
+  assert.deepEqual(added.sources, [], 'a build with neither a current link nor an archive is listed by hash only');
+  assert.equal(applyOfficial(entries, null), entries);
+  assert.equal(applyOfficial(entries, { builds: [{ fullVersion: 'bad', sha256: 'x' }] }).length, entries.length);
+});
+
 let built = false;
 try { await access(new URL('../site/dist/index.html', import.meta.url)); built = true; } catch {}
 test('Built Pages APIs match source data and use the correct repository base path', { skip: !built }, async () => {
   const full = JSON.parse(await readFile(new URL('../site/dist/api/v1/catalog.json', import.meta.url), 'utf8'));
   const compact = JSON.parse(await readFile(new URL('../site/dist/api/v1/windows-x64.json', import.meta.url), 'utf8'));
-  assert.deepEqual(full, catalog);
-  assert.deepEqual(compact, windowsFeed(catalog.entries));
+  assert.deepEqual(full.entries, applyOfficial(catalog.entries, official));
+  assert.deepEqual(full.official.watched, official.watched);
+  assert.deepEqual(compact, windowsFeed(applyOfficial(catalog.entries, official)));
   const builtHtml = await readFile(new URL('../site/dist/index.html', import.meta.url), 'utf8');
   assert.ok(builtHtml.includes('data-api="/BlockTheSpot-Installer/api/v1/catalog.json"'));
   assert.ok(builtHtml.includes('href="/BlockTheSpot-Installer/favicon.svg"'));
