@@ -17,3 +17,4 @@ Thumbs.db
 # Astro
 node_modules/
 .astro/
+__pycache__/
