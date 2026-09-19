@@ -20,7 +20,6 @@ function row(entry) {
   const tr = element('tr');
   const version = element('td');
   version.append(element('strong', entry.version));
-  if (entry.tested) version.append(element('span', 'Tested for BTS', 'badge tested'));
   version.append(element('small', entry.fullVersion.split('.').at(-1), 'hash'));
   const platform = element('td');
   platform.append(element('span', platformNames[entry.platform], 'platform-label'), element('small', `${entry.architecture} · ${entry.format.toUpperCase()}`));
@@ -116,11 +115,3 @@ document.addEventListener('keydown', event => {
 });
 syncControls();
 load();
-// The stable download URL and this optional label follow manual app releases
-// without rebuilding the catalog site.
-fetch('https://api.github.com/repos/RobyRew/BlockTheSpot-Installer/releases/latest', { signal: AbortSignal.timeout(4000) })
-  .then(response => { if (!response.ok) throw new Error('Release metadata unavailable'); return response.json(); })
-  .then(release => {
-    if (/^v\d+\.\d+\.\d+$/.test(release.tag_name) && release.assets?.some(asset => asset.name === 'BlockTheSpotInstaller.exe'))
-      find('app-version').textContent = release.tag_name;
-  }).catch(() => {});

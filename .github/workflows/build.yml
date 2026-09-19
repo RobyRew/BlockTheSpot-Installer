@@ -60,6 +60,13 @@ jobs:
           if ($process.ExitCode -ne 0) { Get-Content ui-smoke/error.txt -ErrorAction SilentlyContinue; throw 'UI smoke test failed.' }
           if (-not (Test-Path ui-smoke/result.txt)) { throw 'UI smoke test produced no result.' }
           Get-Content ui-smoke/result.txt
+      - name: Parse the PowerShell installer
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("scripts/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_.Message }; throw 'install.ps1 has parse errors.' }
+          Write-Host 'install.ps1 parsed cleanly.'
       - name: Create checksum
         shell: pwsh
         run: |

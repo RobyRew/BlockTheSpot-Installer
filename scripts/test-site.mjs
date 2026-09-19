@@ -115,11 +115,13 @@ test('Snapshot refresh is idempotent: unchanged metadata does not cause another 
   const merged = mergeCatalogs(catalog.entries, catalog.entries);
   assert.deepEqual(merged, catalog.entries);
 });
-test('Official latest links and release link are explicit, with accessible page controls', async () => {
+test('Official latest links are explicit, the page has no BlockTheSpot branding, and controls are accessible', async () => {
   const links = [...html.matchAll(/data-official-download href="([^"]+)"/g)];
   assert.equal(links.length, 3);
   for (const [, link] of links) assert.equal(new URL(link).hostname, 'download.scdn.co');
-  assert.ok(html.includes('/releases/latest/download/BlockTheSpotInstaller.exe'));
+  // The site is a plain Spotify installer catalog: no BlockTheSpot name in the visible page.
+  assert.ok(!/BlockTheSpot(?!-Installer)/.test(html.replace(/https:\/\/[^"'<>\s]+/g, '')), 'no BlockTheSpot branding in the page text');
+  assert.ok(!html.includes('Tested for BTS') && !html.includes('BTS tested'));
   assert.ok(html.includes('skip-link'));
   assert.ok(html.includes('aria-label="Main navigation"'));
   assert.ok(html.includes('aria-live="polite"'));

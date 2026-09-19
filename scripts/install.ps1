@@ -1,0 +1,196 @@
+<#
+.SYNOPSIS
+    Install BlockTheSpot into the Spotify desktop app, or restore the original files.
+
+.DESCRIPTION
+    Patches the Spotify desktop client for the current Windows account. The right BlockTheSpot kit
+    is chosen from the Spotify version: the legacy kit for Spotify 1.2.70-1.2.95, the current kit for
+    1.2.96 and newer. Kit files are downloaded from this repository's release. Nothing here needs
+    administrator rights, and -Restore puts Spotify back exactly as it was.
+
+.PARAMETER Version
+    Install this Spotify version first, then patch it. A full build such as 1.3.1.234.g59d6bf59, or
+    'latest' for Spotify's current release. Omit to patch the Spotify already installed.
+
+.PARAMETER Kit
+    Which bundled kit to apply: 'auto' (default, chosen from the version), 'legacy' or 'current'.
+
+.PARAMETER Restore
+    Remove BlockTheSpot and restore Spotify's original files.
+
+.PARAMETER Launch
+    Start Spotify when finished.
+
+.PARAMETER Tag
+    Release tag to pull the kit from. Default 'latest'.
+
+.EXAMPLE
+    iwr -useb https://robyrew.github.io/BlockTheSpot-Installer/install.ps1 | iex
+    Patch the installed Spotify with the matching kit.
+
+.EXAMPLE
+    .\install.ps1 -Version latest -Launch
+    Install the current Spotify, patch it, and open it.
+
+.EXAMPLE
+    .\install.ps1 -Restore
+    Restore Spotify's original files.
+#>
+#Requires -Version 5.1
+[CmdletBinding(DefaultParameterSetName = 'Patch')]
+param(
+    [Parameter(ParameterSetName = 'Patch')][string]$Version,
+    [Parameter(ParameterSetName = 'Patch')][ValidateSet('auto', 'legacy', 'current')][string]$Kit = 'auto',
+    [Parameter(ParameterSetName = 'Patch')][switch]$Launch,
+    [Parameter(ParameterSetName = 'Restore')][switch]$Restore,
+    [string]$Tag = 'latest'
+)
+
+$ErrorActionPreference = 'Stop'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$Repository   = 'RobyRew/BlockTheSpot-Installer'
+$SpotifyDir   = Join-Path $env:APPDATA 'Spotify'
+$SpotifyExe   = Join-Path $SpotifyDir 'Spotify.exe'
+$Cut          = [version]'1.2.96.0'
+$LegacyFloor  = [version]'1.2.70.0'
+$Feed         = "https://robyrew.github.io/$($Repository.Split('/')[1])/api/v1/windows-x64.json"
+$PatchNames   = @('chrome_elf.dll', 'blockthespot.dll', 'config.ini')
+$BackupName   = 'chrome_elf_required.dll'
+
+function Write-Banner {
+    Write-Host ''
+    Write-Host '  ██  BlockTheSpot  ' -ForegroundColor Black -BackgroundColor Green -NoNewline
+    Write-Host '  Spotify desktop patch' -ForegroundColor Green
+    Write-Host ''
+}
+function Write-Step($text)  { Write-Host '  ▸ ' -ForegroundColor Green -NoNewline; Write-Host $text }
+function Write-Info($text)  { Write-Host '    ' -NoNewline; Write-Host $text -ForegroundColor DarkGray }
+function Write-Done($text)  { Write-Host '  ✓ ' -ForegroundColor Green -NoNewline; Write-Host $text }
+function Fail($text)        { Write-Host '  ✗ ' -ForegroundColor Red -NoNewline; Write-Host $text -ForegroundColor Red; exit 1 }
+
+# Four dotted numbers, ignoring the .g<hash> suffix, as a comparable [version].
+function ConvertTo-Version($text) {
+    if (-not $text) { return $null }
+    $parts = ($text -split '\.')[0..3]
+    if ($parts.Count -lt 4) { return $null }
+    try { return [version]($parts -join '.') } catch { return $null }
+}
+
+function Get-InstalledVersion {
+    if (-not (Test-Path $SpotifyExe)) { return $null }
+    return (Get-Item $SpotifyExe).VersionInfo.ProductVersion
+}
+
+function Resolve-Kit($version) {
+    if ($Kit -ne 'auto') { return $Kit }
+    $parsed = ConvertTo-Version $version
+    if (-not $parsed) { return 'current' }
+    if ($parsed -lt $LegacyFloor) { Fail "Spotify $version is older than the earliest supported build ($LegacyFloor)." }
+    if ($parsed -lt $Cut) { return 'legacy' } else { return 'current' }
+}
+
+function Get-ReleaseAsset($name, $destination) {
+    $url = if ($Tag -eq 'latest') { "https://github.com/$Repository/releases/latest/download/$name" }
+           else { "https://github.com/$Repository/releases/download/$Tag/$name" }
+    Write-Info "downloading $name"
+    Invoke-WebRequest -Uri $url -OutFile $destination -UseBasicParsing
+}
+
+function Stop-Spotify {
+    Get-Process -Name Spotify -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 400
+}
+
+function Install-Spotify($requested) {
+    $setup = Join-Path ([IO.Path]::GetTempPath()) ("SpotifySetup-" + [guid]::NewGuid().ToString('N') + '.exe')
+    $url = 'https://download.scdn.co/SpotifyFullSetupX64.exe'
+    if ($requested -and $requested -ne 'latest') {
+        Write-Info 'looking up the version in the catalog'
+        $feed = Invoke-RestMethod -Uri $Feed -UseBasicParsing
+        $short = (($requested -split '\.')[0..3]) -join '.'
+        $entry = $feed.$short
+        if (-not $entry) { Fail "Spotify $requested is not in the catalog. Browse https://robyrew.github.io/$($Repository.Split('/')[1])/ for available builds." }
+        $url = $entry.win.x64.url
+        Write-Info "source: $url"
+    }
+    Write-Step "Downloading Spotify$(if ($requested) { " $requested" })"
+    Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing
+    Write-Step 'Running Spotify setup'
+    Stop-Spotify
+    Start-Process -FilePath $setup -Wait
+    Remove-Item $setup -ErrorAction SilentlyContinue
+    # Setup relaunches Spotify; close it before touching its files.
+    Stop-Spotify
+}
+
+function Invoke-Restore {
+    Write-Banner
+    if (-not (Test-Path $SpotifyDir)) { Fail "Spotify is not installed for this account ($SpotifyDir)." }
+    $backup = Join-Path $SpotifyDir $BackupName
+    if (-not (Test-Path $backup)) {
+        if (Test-Path (Join-Path $SpotifyDir 'blockthespot.dll')) {
+            Fail 'The original chrome_elf.dll backup is missing. Reinstall Spotify to restore its files.'
+        }
+        Write-Done 'Spotify is already unpatched.'
+        return
+    }
+    Write-Step 'Restoring Spotify''s original files'
+    Stop-Spotify
+    Copy-Item $backup (Join-Path $SpotifyDir 'chrome_elf.dll') -Force
+    Remove-Item (Join-Path $SpotifyDir 'blockthespot.dll') -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $SpotifyDir 'config.ini') -ErrorAction SilentlyContinue
+    Remove-Item $backup -ErrorAction SilentlyContinue
+    Write-Done 'Original Spotify files restored.'
+}
+
+function Invoke-Patch {
+    Write-Banner
+
+    $reinstall = [bool]$Version
+    if ($reinstall) { Install-Spotify $Version }
+
+    $installed = Get-InstalledVersion
+    if (-not $installed) { Fail "Spotify is not installed. Run with -Version latest to install it first." }
+
+    $kit = Resolve-Kit $installed
+    Write-Step "Spotify $installed detected"
+    Write-Info "kit: $kit  (legacy = kernel32 IAT ≤ 1.2.95, current = api-ms IAT ≥ 1.2.96)"
+
+    # Fetch the kit into a temp folder: chrome_elf.dll (shared) + this kit's blockthespot.dll and config.ini.
+    $staging = Join-Path ([IO.Path]::GetTempPath()) ("BlockTheSpot-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+    try {
+        Write-Step 'Fetching the BlockTheSpot kit'
+        Get-ReleaseAsset 'chrome_elf.dll'              (Join-Path $staging 'chrome_elf.dll')
+        Get-ReleaseAsset "blockthespot-$kit.dll"        (Join-Path $staging 'blockthespot.dll')
+        Get-ReleaseAsset "config-$kit.ini"              (Join-Path $staging 'config.ini')
+
+        $chrome = Join-Path $SpotifyDir 'chrome_elf.dll'
+        $backup = Join-Path $SpotifyDir $BackupName
+        if (-not (Test-Path $chrome) -and -not (Test-Path $backup)) {
+            Fail 'Spotify''s original chrome_elf.dll is missing. Reinstall Spotify before patching.'
+        }
+
+        Write-Step "Applying BlockTheSpot ($kit kit)"
+        Stop-Spotify
+        # Back up the original proxy once; a reinstall refreshes it, an existing patch keeps its backup.
+        if ((Test-Path $chrome) -and ($reinstall -or -not (Test-Path $backup))) {
+            Copy-Item $chrome $backup -Force
+        }
+        foreach ($name in $PatchNames) {
+            Copy-Item (Join-Path $staging $name) (Join-Path $SpotifyDir $name) -Force
+        }
+        Write-Done "Spotify $installed is patched with the $kit kit."
+    }
+    finally {
+        Remove-Item $staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($Launch) { Write-Step 'Opening Spotify'; Start-Process $SpotifyExe }
+    Write-Host ''
+    Write-Info 'Undo any time with:  .\install.ps1 -Restore'
+    Write-Host ''
+}
+
+if ($Restore) { Invoke-Restore } else { Invoke-Patch }

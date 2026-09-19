@@ -18,3 +18,6 @@ Thumbs.db
 node_modules/
 .astro/
 __pycache__/
+
+# Install script copied into the Pages build; canonical source is scripts/install.ps1
+/site/public/install.ps1

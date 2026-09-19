@@ -6,7 +6,7 @@ const source = ordered.find(candidate => !isExpired(candidate)) ?? ordered[0];
 const others = ordered.filter(candidate => candidate !== source);
 ---
 <tr>
-  <td><strong>{entry.version}</strong>{entry.tested && <span class="badge tested">Tested for BTS</span>}<small class="hash">{entry.fullVersion.split('.').at(-1)}</small></td>
+  <td><strong>{entry.version}</strong><small class="hash">{entry.fullVersion.split('.').at(-1)}</small></td>
   <td><span class="platform-label">{platformNames[entry.platform]}</span><small>{entry.architecture} · {entry.format.toUpperCase()}</small></td>
   <td><time datetime={entry.date ?? undefined}>{entry.date ?? 'Not listed'}</time><small>{formatSize(entry.size)}</small></td>
   <td><span class:list={['source-label', source.kind]}>{source.label}</span><small>{sourceNote(source)}</small></td>

@@ -49,10 +49,37 @@ jobs:
       - name: Verify artifact checksum
         working-directory: dist
         run: sha256sum --check SHA256SUMS.txt
+      - name: Assemble patch kits, script and ready-to-drop zips
+        run: |
+          set -euo pipefail
+          P=src/BlockTheSpot.Core/Patch
+          # Individual files the PowerShell script and manual install pull per kit.
+          cp "$P/chrome_elf.dll"            dist/chrome_elf.dll
+          cp "$P/current/blockthespot.dll"  dist/blockthespot-current.dll
+          cp "$P/current/config.ini"        dist/config-current.ini
+          cp "$P/legacy/blockthespot.dll"   dist/blockthespot-legacy.dll
+          cp "$P/legacy/config.ini"         dist/config-legacy.ini
+          cp scripts/install.ps1            dist/install.ps1
+          # Ready-to-drop zips: extract into %APPDATA%\Spotify after backing up chrome_elf.dll.
+          for kit in current legacy; do
+            work="kit-$kit"; mkdir -p "$work"
+            cp "$P/chrome_elf.dll" "$work/chrome_elf.dll"
+            cp "$P/$kit/blockthespot.dll" "$work/blockthespot.dll"
+            cp "$P/$kit/config.ini" "$work/config.ini"
+            (cd "$work" && zip -q -X "../dist/BlockTheSpot-$kit.zip" chrome_elf.dll blockthespot.dll config.ini)
+          done
+          # Checksums for every attached patch file, next to the installer's own line.
+          (cd dist && sha256sum chrome_elf.dll blockthespot-*.dll config-*.ini install.ps1 BlockTheSpot-*.zip >> SHA256SUMS.txt)
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
           RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          gh release create "v$RELEASE_VERSION" dist/BlockTheSpotInstaller.exe dist/SHA256SUMS.txt dist/LICENSE.txt --target "$RELEASE_COMMIT" --title "BlockTheSpot Installer v$RELEASE_VERSION" --notes-file docs/RELEASE_NOTES.md --latest
+          gh release create "v$RELEASE_VERSION" \
+            dist/BlockTheSpotInstaller.exe dist/SHA256SUMS.txt dist/LICENSE.txt \
+            dist/install.ps1 \
+            dist/chrome_elf.dll \
+            dist/blockthespot-current.dll dist/config-current.ini dist/BlockTheSpot-current.zip \
+            dist/blockthespot-legacy.dll dist/config-legacy.ini dist/BlockTheSpot-legacy.zip \
+            --target "$RELEASE_COMMIT" --title "BlockTheSpot Installer v$RELEASE_VERSION" --notes-file docs/RELEASE_NOTES.md --latest

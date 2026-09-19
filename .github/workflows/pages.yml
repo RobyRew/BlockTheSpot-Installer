@@ -66,6 +66,8 @@ jobs:
       - run: npm ci --prefix site
       - name: Build Astro and static APIs
         run: npm run build --prefix site
+      - name: Publish the install script on Pages
+        run: cp scripts/install.ps1 site/dist/install.ps1
       - name: Verify catalog, filters, links, and built API contracts
         run: node --test scripts/test-site.mjs
       - uses: actions/configure-pages@v6
