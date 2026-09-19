@@ -56,6 +56,9 @@ $Cut          = [version]'1.2.96.0'
 $LegacyFloor  = [version]'1.2.70.0'
 $Feed         = "https://robyrew.github.io/$($Repository.Split('/')[1])/api/v1/windows-x64.json"
 $PatchNames   = @('chrome_elf.dll', 'blockthespot.dll', 'config.ini')
+# This release carries the current kit only. The legacy kit is upstream's 1.2.93.667 release,
+# which is the same chrome_elf.dll, blockthespot.dll and config.ini, byte for byte.
+$LegacyKit    = 'https://github.com/Nuzair46/BlockTheSpot/releases/download/v1.2.93.667-build.8'
 $BackupName   = 'chrome_elf_required.dll'
 
 function Write-Banner {
@@ -90,11 +93,10 @@ function Resolve-Kit($version) {
     if ($parsed -lt $Cut) { return 'legacy' } else { return 'current' }
 }
 
-function Get-ReleaseAsset($name, $destination) {
-    $url = if ($Tag -eq 'latest') { "https://github.com/$Repository/releases/latest/download/$name" }
-           else { "https://github.com/$Repository/releases/download/$Tag/$name" }
-    Write-Info "downloading $name"
-    Invoke-Download $url $destination
+function Get-KitBase($kit) {
+    if ($kit -eq 'legacy') { return $LegacyKit }
+    if ($Tag -eq 'latest') { return "https://github.com/$Repository/releases/latest/download" }
+    return "https://github.com/$Repository/releases/download/$Tag"
 }
 
 function Invoke-Download($uri, $destination) {
@@ -172,10 +174,13 @@ function Invoke-Patch {
     $staging = Join-Path ([IO.Path]::GetTempPath()) ("BlockTheSpot-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
     try {
+        $base = Get-KitBase $kit
         Write-Step 'Fetching the BlockTheSpot kit'
-        Get-ReleaseAsset 'chrome_elf.dll'              (Join-Path $staging 'chrome_elf.dll')
-        Get-ReleaseAsset "blockthespot-$kit.dll"        (Join-Path $staging 'blockthespot.dll')
-        Get-ReleaseAsset "config-$kit.ini"              (Join-Path $staging 'config.ini')
+        Write-Info "source: $base"
+        foreach ($name in $PatchNames) {
+            Write-Info "downloading $name"
+            Invoke-Download "$base/$name" (Join-Path $staging $name)
+        }
 
         $chrome = Join-Path $SpotifyDir 'chrome_elf.dll'
         $backup = Join-Path $SpotifyDir $BackupName

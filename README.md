@@ -4,7 +4,7 @@ Install [BlockTheSpot](https://github.com/Nuzair46/BlockTheSpot) — the Spotify
 
 [**Download the installer**](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest/download/BlockTheSpotInstaller.exe) · [Spotify version library](https://robyrew.github.io/BlockTheSpot-Installer/) · [All releases](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest)
 
-> Two kits ship in every release: **legacy** for Spotify 1.2.70–1.2.95 and **current** for 1.2.96+. The installer and the script choose for you from the installed version.
+> Two kits ship inside the installer: **legacy** for Spotify 1.2.70–1.2.95 and **current** for 1.2.96+. The installer and the script choose for you from the installed version.
 
 ## Install
 
@@ -47,9 +47,11 @@ The **Method** chip on each build shows which kit it uses; the kit is always cho
 ### 4 · Manual
 
 1. Close Spotify.
-2. Find your Spotify version (Settings → About). Download the matching zip from the [latest release](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest): **`BlockTheSpot-current.zip`** for 1.2.96+, **`BlockTheSpot-legacy.zip`** for 1.2.95 and older.
+2. Find your Spotify version (Settings → About), then download `chrome_elf.dll`, `blockthespot.dll` and `config.ini`:
+   - **Spotify 1.2.96+** → the [latest release](https://github.com/RobyRew/BlockTheSpot-Installer/releases/latest) here.
+   - **Spotify 1.2.95 and older** → [upstream's 1.2.93.667 release](https://github.com/Nuzair46/BlockTheSpot/releases/tag/v1.2.93.667-build.8) (the legacy kit, unchanged).
 3. Open `%APPDATA%\Spotify`. Rename `chrome_elf.dll` to `chrome_elf_required.dll` (this backs up the original).
-4. Extract the zip's `chrome_elf.dll`, `blockthespot.dll` and `config.ini` into `%APPDATA%\Spotify`, overwriting.
+4. Copy the three downloaded files into `%APPDATA%\Spotify`, overwriting.
 5. Start Spotify.
 
 **Restore manually:** close Spotify, delete `blockthespot.dll`, `config.ini` and `chrome_elf.dll` from `%APPDATA%\Spotify`, rename `chrome_elf_required.dll` back to `chrome_elf.dll`, start Spotify.
@@ -78,4 +80,4 @@ Publish the self-contained EXE on Windows:
 dotnet publish src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o dist
 ```
 
-Releases are cut from **Actions → Release installer**, which builds the EXE, the patch kits, the two zips and `install.ps1`, and attaches them with a SHA-256 manifest. The version library and its JSON APIs deploy from GitHub Pages; a scheduled watcher records new Spotify builds. Not affiliated with Spotify.
+Releases are cut from **Actions → Release installer**, which builds the EXE and attaches it with the current kit's `chrome_elf.dll`, `blockthespot.dll` and `config.ini` and a SHA-256 manifest. `install.ps1` is served from GitHub Pages. The version library and its JSON APIs deploy from GitHub Pages; a scheduled watcher records new Spotify builds. Not affiliated with Spotify.
