@@ -2,10 +2,10 @@ name: Spotify download library
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'scripts/test-site.mjs', '.github/workflows/pages.yml']
+    paths: ['site/**', 'scripts/test-site.mjs', 'scripts/install.ps1', '.github/workflows/pages.yml']
   pull_request:
     branches: [main]
-    paths: ['site/**', 'scripts/test-site.mjs', '.github/workflows/pages.yml']
+    paths: ['site/**', 'scripts/test-site.mjs', 'scripts/install.ps1', '.github/workflows/pages.yml']
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
