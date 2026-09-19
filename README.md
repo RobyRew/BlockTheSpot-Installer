@@ -80,4 +80,4 @@ Publish the self-contained EXE on Windows:
 dotnet publish src/BlockTheSpot.App/BlockTheSpot.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o dist
 ```
 
-Releases are cut from **Actions → Release installer**, which builds the EXE and attaches it with the current kit's `chrome_elf.dll`, `blockthespot.dll` and `config.ini` and a SHA-256 manifest. `install.ps1` is served from GitHub Pages. The version library and its JSON APIs deploy from GitHub Pages; a scheduled watcher records new Spotify builds. Not affiliated with Spotify.
+Releases are cut from **Actions → Release installer**, which attaches four files: the EXE and the current kit's `chrome_elf.dll`, `blockthespot.dll` and `config.ini`, with their SHA-256 listed in the release notes. `install.ps1` is served from GitHub Pages. The version library and its JSON APIs deploy from GitHub Pages; a scheduled watcher records new Spotify builds. Not affiliated with Spotify.

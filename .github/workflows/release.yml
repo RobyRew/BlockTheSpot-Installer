@@ -52,13 +52,19 @@ jobs:
       - name: Attach the current patch kit
         run: |
           set -euo pipefail
-          # The release carries the installer plus the current kit's three files, under the names
-          # they take inside %APPDATA%\\Spotify. The legacy kit stays upstream (Nuzair46 1.2.93.667).
+          # The release carries four files only: the installer and the current kit's three, under the
+          # names they take inside %APPDATA%\\Spotify. The legacy kit stays upstream (Nuzair46 1.2.93.667).
           P=src/BlockTheSpot.Core/Patch
           cp "$P/chrome_elf.dll"           dist/chrome_elf.dll
           cp "$P/current/blockthespot.dll" dist/blockthespot.dll
           cp "$P/current/config.ini"       dist/config.ini
-          (cd dist && sha256sum chrome_elf.dll blockthespot.dll config.ini >> SHA256SUMS.txt)
+          # Checksums go in the release body rather than a separate asset.
+          cp docs/RELEASE_NOTES.md notes.md
+          {
+            printf '\n## Checksums (SHA-256)\n\n```\n'
+            (cd dist && sha256sum BlockTheSpotInstaller.exe chrome_elf.dll blockthespot.dll config.ini)
+            printf '```\n'
+          } >> notes.md
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,5 +74,4 @@ jobs:
           gh release create "v$RELEASE_VERSION" \
             dist/BlockTheSpotInstaller.exe \
             dist/chrome_elf.dll dist/blockthespot.dll dist/config.ini \
-            dist/SHA256SUMS.txt dist/LICENSE.txt \
-            --target "$RELEASE_COMMIT" --title "BlockTheSpot Installer v$RELEASE_VERSION" --notes-file docs/RELEASE_NOTES.md --latest
+            --target "$RELEASE_COMMIT" --title "BlockTheSpot Installer v$RELEASE_VERSION" --notes-file notes.md --latest
