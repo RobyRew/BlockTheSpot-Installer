@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Install BlockTheSpot into the Spotify desktop app, or restore the original files.
 
@@ -94,7 +94,18 @@ function Get-ReleaseAsset($name, $destination) {
     $url = if ($Tag -eq 'latest') { "https://github.com/$Repository/releases/latest/download/$name" }
            else { "https://github.com/$Repository/releases/download/$Tag/$name" }
     Write-Info "downloading $name"
-    Invoke-WebRequest -Uri $url -OutFile $destination -UseBasicParsing
+    Invoke-Download $url $destination
+}
+
+function Invoke-Download($uri, $destination) {
+    for ($attempt = 1; ; $attempt++) {
+        try { Invoke-WebRequest -Uri $uri -OutFile $destination -UseBasicParsing; return }
+        catch {
+            if ($attempt -ge 4) { throw }
+            Write-Info "retry $attempt after: $($_.Exception.Message)"
+            Start-Sleep -Seconds ($attempt * 2)
+        }
+    }
 }
 
 function Stop-Spotify {
@@ -115,7 +126,7 @@ function Install-Spotify($requested) {
         Write-Info "source: $url"
     }
     Write-Step "Downloading Spotify$(if ($requested) { " $requested" })"
-    Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing
+    Invoke-Download $url $setup
     Write-Step 'Running Spotify setup'
     Stop-Spotify
     Start-Process -FilePath $setup -Wait
